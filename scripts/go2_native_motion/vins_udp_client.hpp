@@ -23,7 +23,8 @@ class VinsUdpClient final : public VinsClient {
   void close();
 
   go2_nav::VinsWireState snapshot() override;
-  bool requestOrigin(std::string* error, double timeout_s) override;
+  bool requestOrigin(std::string* error, double timeout_s,
+                     bool* measured) override;
   void requestPing() override;
 
  private:
@@ -37,6 +38,7 @@ class VinsUdpClient final : public VinsClient {
   go2_nav::VinsWireState state_;
   bool origin_ok_ = false;
   bool origin_failed_ = false;
+  bool origin_measured_ = false;
   std::string origin_error_;
 };
 

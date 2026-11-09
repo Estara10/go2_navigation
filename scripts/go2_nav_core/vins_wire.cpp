@@ -135,7 +135,9 @@ bool decodeNativeCommand(const std::string& text, bool* set_origin, bool* ping,
   return false;
 }
 
-std::string encodeOriginOk() { return "ORIGIN_OK\n"; }
+std::string encodeOriginOk(bool measured) {
+  return std::string("ORIGIN_OK ") + (measured ? "1" : "0") + "\n";
+}
 
 std::string encodeOriginFail(VinsReason reason) {
   return "ORIGIN_FAIL " + std::string(vinsReasonName(reason)) + "\n";
@@ -145,8 +147,10 @@ std::string encodeState(const VinsWireState& state) {
   std::ostringstream out;
   out << "STATE " << state.seq << ' ' << std::fixed << std::setprecision(9)
       << state.stamp_s << ' ' << state.x << ' ' << state.y << ' ' << state.z
-      << ' ' << state.yaw << ' ' << (state.valid ? 1 : 0) << ' '
-      << vinsReasonName(state.reason) << '\n';
+      << ' ' << state.yaw << ' ' << state.vx << ' ' << state.vy << ' '
+      << state.wz << ' ' << (state.valid ? 1 : 0) << ' '
+      << vinsReasonName(state.reason) << ' ' << (state.measured ? 1 : 0)
+      << '\n';
   return out.str();
 }
 
@@ -168,13 +172,14 @@ bool decodeBridgeMessage(const std::string& text, VinsBridgeMessage* message,
   }
 
   if (tokens[0] == "ORIGIN_OK") {
-    if (tokens.size() != 1) {
+    if (tokens.size() != 2 || (tokens[1] != "0" && tokens[1] != "1")) {
       if (error != nullptr) {
-        *error = "ORIGIN_OK has extra fields";
+        *error = "ORIGIN_OK requires measured 0/1";
       }
       return false;
     }
     message->type = VinsBridgeMessageType::OriginOk;
+    message->measured = tokens[1] == "1";
     return true;
   }
 
@@ -197,9 +202,9 @@ bool decodeBridgeMessage(const std::string& text, VinsBridgeMessage* message,
     return true;
   }
 
-  if (tokens[0] != "STATE" || tokens.size() != 9) {
+  if (tokens[0] != "STATE" || tokens.size() != 13) {
     if (error != nullptr) {
-      *error = "expected STATE with 8 fields";
+      *error = "expected STATE with 12 fields";
     }
     return false;
   }
@@ -210,26 +215,36 @@ bool decodeBridgeMessage(const std::string& text, VinsBridgeMessage* message,
       !parseDoubleToken(tokens[3], &state.x) ||
       !parseDoubleToken(tokens[4], &state.y) ||
       !parseDoubleToken(tokens[5], &state.z) ||
-      !parseDoubleToken(tokens[6], &state.yaw)) {
+      !parseDoubleToken(tokens[6], &state.yaw) ||
+      !parseDoubleToken(tokens[7], &state.vx) ||
+      !parseDoubleToken(tokens[8], &state.vy) ||
+      !parseDoubleToken(tokens[9], &state.wz)) {
     if (error != nullptr) {
       *error = "invalid numeric field in STATE";
     }
     return false;
   }
-  if (tokens[7] != "0" && tokens[7] != "1") {
+  if (tokens[10] != "0" && tokens[10] != "1") {
     if (error != nullptr) {
       *error = "STATE valid must be 0 or 1";
     }
     return false;
   }
-  state.valid = tokens[7] == "1";
+  state.valid = tokens[10] == "1";
   VinsReason reason = VinsReason::Unknown;
-  if (!parseVinsReason(tokens[8], &reason)) {
+  if (!parseVinsReason(tokens[11], &reason)) {
     if (error != nullptr) {
-      *error = "invalid STATE reason: " + tokens[8];
+      *error = "invalid STATE reason: " + tokens[11];
     }
     return false;
   }
+  if (tokens[12] != "0" && tokens[12] != "1") {
+    if (error != nullptr) {
+      *error = "STATE measured must be 0 or 1";
+    }
+    return false;
+  }
+  state.measured = tokens[12] == "1";
   if (state.valid && reason != VinsReason::Ok) {
     if (error != nullptr) {
       *error = "valid STATE must use reason OK";
@@ -246,6 +261,7 @@ bool decodeBridgeMessage(const std::string& text, VinsBridgeMessage* message,
   state.received = true;
   message->type = VinsBridgeMessageType::State;
   message->state = state;
+  message->measured = state.measured;
   return true;
 }
 

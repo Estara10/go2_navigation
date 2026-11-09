@@ -85,6 +85,7 @@ int main() {
 
   go2_vins_bridge::BridgeConfig bridge_config;
   bridge_config.vins_timeout_s = 0.5;
+  bridge_config.extrinsic.measured = false;
   go2_vins_bridge::BridgeCore bridge_core(bridge_config);
 
   go2_vins_bridge::UdpBridgeServer server(kControlPort, kStatePort);
@@ -125,7 +126,7 @@ int main() {
     if (set_origin) {
       go2_nav::VinsReason reason = go2_nav::VinsReason::NoVins;
       if (bridge_core.setOrigin(monotonicNow(), &reason)) {
-        return go2_nav::encodeOriginOk();
+        return go2_nav::encodeOriginOk(bridge_core.extrinsic().measured);
       }
       return go2_nav::encodeOriginFail(reason);
     }
@@ -162,6 +163,7 @@ int main() {
   go2_native_motion::Config config;
   config.control_source = go2_native_motion::ControlSource::Vins;
   config.vins_timeout_s = 0.5;
+  config.allow_unmeasured_extrinsic = true;
   config.csv_path = "integration.csv";
   go2_native_motion::SessionState session_state;
 
@@ -218,6 +220,10 @@ int main() {
   check(backend.stop_calls >= 1, "integration stop called");
   check(csv_text.find("control_source") != std::string::npos,
         "integration CSV header");
+  check(csv_text.find("vins_measured") != std::string::npos,
+        "integration CSV measured field");
+  check(csv_text.find("unmeasured_extrinsic") == std::string::npos,
+        "integration measured override accepted");
   check(csv_text.find("VINS_INVALID") != std::string::npos,
         "integration stale VINS stops");
   check(csv_text.find("vins_origin_failed") == std::string::npos,

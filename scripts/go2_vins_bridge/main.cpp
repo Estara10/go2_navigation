@@ -251,7 +251,7 @@ int main(int argc, char** argv) {
     if (set_origin) {
       go2_nav::VinsReason reason = go2_nav::VinsReason::NoVins;
       if (core.setOrigin(monotonicNow(), &reason)) {
-        return go2_nav::encodeOriginOk();
+        return go2_nav::encodeOriginOk(core.extrinsic().measured);
       }
       return go2_nav::encodeOriginFail(reason);
     }

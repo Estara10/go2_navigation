@@ -31,8 +31,12 @@ struct VinsWireState {
   double y = 0.0;
   double z = 0.0;
   double yaw = 0.0;
+  double vx = 0.0;
+  double vy = 0.0;
+  double wz = 0.0;
   bool valid = false;
   VinsReason reason = VinsReason::NoVins;
+  bool measured = false;
 };
 
 enum class VinsBridgeMessageType {
@@ -46,6 +50,7 @@ struct VinsBridgeMessage {
   VinsBridgeMessageType type = VinsBridgeMessageType::Invalid;
   VinsWireState state;
   VinsReason reason = VinsReason::Unknown;
+  bool measured = false;
 };
 
 // Native -> bridge commands. One command per datagram; trailing whitespace is
@@ -56,10 +61,10 @@ bool decodeNativeCommand(const std::string& text, bool* set_origin, bool* ping,
                          std::string* error);
 
 // Bridge -> native messages:
-//   ORIGIN_OK
+//   ORIGIN_OK <measured>
 //   ORIGIN_FAIL <reason>
-//   STATE <seq> <stamp> <x> <y> <z> <yaw> <valid> <reason>
-std::string encodeOriginOk();
+//   STATE <seq> <stamp> <x> <y> <z> <yaw> <vx> <vy> <wz> <valid> <reason> <measured>
+std::string encodeOriginOk(bool measured);
 std::string encodeOriginFail(VinsReason reason);
 std::string encodeState(const VinsWireState& state);
 bool decodeBridgeMessage(const std::string& text, VinsBridgeMessage* message,

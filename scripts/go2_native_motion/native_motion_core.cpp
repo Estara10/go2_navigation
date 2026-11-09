@@ -121,6 +121,8 @@ struct RowContext {
   const go2_nav::VinsWireState* vins = nullptr;
   bool vins_valid = false;
   std::string vins_reason;
+  bool vins_measured = false;
+  bool measured_override = false;
   bool has_local = false;
   LocalPose local;
   bool has_vins_age = false;
@@ -247,8 +249,13 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     fields.push_back(context.has_vins_age
                          ? number(context.vins_age_s, 6)
                          : std::string());
+    fields.push_back(number(context.vins->vx, 6));
+    fields.push_back(number(context.vins->vy, 6));
+    fields.push_back(number(context.vins->wz, 6));
+    fields.push_back(context.vins_measured ? "1" : "0");
+    fields.push_back(context.measured_override ? "1" : "0");
   } else {
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 10; ++i) {
       fields.push_back("");
     }
   }
@@ -293,7 +300,7 @@ StateSnapshot snapshotFromVins(const go2_nav::VinsWireState& vins,
   snapshot.seq = vins.seq;
   snapshot.age_s = vinsAgeS(vins, now_s);
   snapshot.position = {vins.x, vins.y, 0.0};
-  snapshot.velocity = {0.0, 0.0, 0.0};
+  snapshot.velocity = {vins.vx, vins.vy, 0.0};
   snapshot.yaw_rad = vins.yaw;
   return snapshot;
 }
@@ -560,7 +567,8 @@ void writeCsvHeader(std::ostream& csv) {
          "native_pos_x,native_pos_y,native_pos_z,"
          "native_vel_x,native_vel_y,native_vel_z,native_yaw_raw,"
          "control_source,vins_valid,vins_reason,vins_seq,vins_stamp,"
-         "vins_age_s,"
+         "vins_age_s,vins_vx,vins_vy,vins_wz,vins_measured,"
+         "measured_override,"
          "api_return,event,detail\n";
 }
 
@@ -577,6 +585,9 @@ int runInteractiveSession(const Config& config, Backend& backend,
   double next_control = 0.0;
   bool control_valid = false;
   bool control_local_available = false;
+  bool control_measured = false;
+  bool unmeasured_override = false;
+  double control_yaw_rate_radps = 0.0;
   LocalPose control_local;
   std::string control_reason = "NO_VINS";
   session_state.stop_failed = false;
@@ -588,6 +599,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
       control_valid = isFresh(state);
       control_reason = control_valid ? "OK" : "STALE";
       control_local_available = origin.set && state.received;
+      control_measured = false;
+      control_yaw_rate_radps = 0.0;
       if (control_local_available) {
         control_local = toLocalPose(state, origin);
       }
@@ -604,6 +617,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
             : vinsReasonForDisplay(vins_state, now_s, config.vins_timeout_s);
     control_local_available = vins_state.received;
     control_local = LocalPose{vins_state.x, vins_state.y, vins_state.yaw};
+    control_measured = vins_state.measured;
+    control_yaw_rate_radps = vins_state.wz;
   };
 
   auto writeEvent = [&](const char* name, const std::string& detail,
@@ -621,6 +636,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
     context.vins = context.vins_control ? &vins_state : nullptr;
     context.vins_valid = control_valid;
     context.vins_reason = control_reason;
+    context.vins_measured = control_measured;
+    context.measured_override = unmeasured_override;
     context.has_local = control_local_available;
     context.local = control_local;
     context.has_vins_age =
@@ -774,6 +791,10 @@ int runInteractiveSession(const Config& config, Backend& backend,
           << " valid=" << (vins_state.valid ? "1" : "0")
           << " reason=" << vinsReasonForDisplay(vins_state, runtime.now_s(),
                                                 config.vins_timeout_s)
+          << " vx=" << vins_state.vx << " vy=" << vins_state.vy
+          << " wz=" << vins_state.wz
+          << " measured=" << (control_measured ? "1" : "0")
+          << " measured_override=" << (unmeasured_override ? "1" : "0")
           << "\n";
     }
 
@@ -965,9 +986,12 @@ int runInteractiveSession(const Config& config, Backend& backend,
 
     if (config.control_source == ControlSource::Vins) {
       std::string error;
+      bool measured = false;
       const bool ok =
           vins_client != nullptr &&
-          vins_client->requestOrigin(&error, config.vins_origin_timeout_s);
+          vins_client->requestOrigin(&error, config.vins_origin_timeout_s,
+                                     &measured);
+      control_measured = measured;
       if (!ok) {
         if (error.empty()) {
           error = "no VINS bridge client";
@@ -976,16 +1000,28 @@ int runInteractiveSession(const Config& config, Backend& backend,
         writeEvent("terminal_rejected", "vins_origin_failed:" + error);
         return;
       }
+      if (!measured && !config.allow_unmeasured_extrinsic) {
+        log << "T_base_cam measured=false；默认拒绝 VINS origin 和运动。"
+               "仅机制验证可加 --allow-unmeasured-extrinsic；"
+               "仍不得用于 5 cm 验收。\n";
+        writeEvent("terminal_rejected", "unmeasured_extrinsic");
+        return;
+      }
       origin.set = true;
       origin.native_x = 0.0;
       origin.native_y = 0.0;
       origin.native_yaw = 0.0;
+      unmeasured_override = !measured;
       refreshControl(runtime.now_s());
-      writeEvent("origin_set", "vins_nav (native origin fields unused)");
-      log << "VINS origin 已建立; 控制来源=vins; "
-             "等待 VINS STATE 后才允许 plan/goto/yaw。\n";
-      log << "T_base_cam 的 measured 标记由桥接日志/配置给出；"
-             "本工具不猜测外参。\n";
+      writeEvent("origin_set", measured ? "vins_nav measured=1"
+                                        : "vins_nav measured=0 OVERRIDE");
+      log << "VINS origin 已建立; 控制来源=vins; measured="
+          << (measured ? "1" : "0")
+          << "; 等待 VINS STATE 后才允许 plan/goto/yaw。\n";
+      if (!measured) {
+        log << "!! 当前 T_base_cam 未实测；已显式允许未测量外参，"
+               "只用于离线/机制验证，不得用于实机控制或 5 cm 验收。\n";
+      }
       return;
     }
 
@@ -1266,14 +1302,16 @@ int runInteractiveSession(const Config& config, Backend& backend,
           done = true;
           end_reason = TaskEndReason::Timeout;
         } else {
-          // The native SportModeState velocity frame is not verified for
-          // control; only local position and heading feed the tracker.
+          // Use the selected control source's velocity and yaw rate. In vins
+          // mode this is the bridge's base_link twist; in native mode it is
+          // the SportModeState velocity (still not an independent truth).
           go2_nav::BodyState body;
           body.stamp_s = runtime.now_s();
           body.position_m = go2_nav::Vec3{local.x, local.y, 0.0};
           body.yaw_rad = local.heading;
-          body.velocity_mps = go2_nav::Vec2{0.0, 0.0};
-          body.yaw_rate_radps = 0.0;
+          body.velocity_mps = go2_nav::Vec2{control_state.velocity[0],
+                                            control_state.velocity[1]};
+          body.yaw_rate_radps = control_yaw_rate_radps;
           body.valid = control_valid;
 
           go2_nav::PurePursuitConfig track_config;
@@ -1370,6 +1408,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
       context.vins = context.vins_control ? &vins_state : nullptr;
       context.vins_valid = control_valid;
       context.vins_reason = control_reason;
+      context.vins_measured = control_measured;
+      context.measured_override = unmeasured_override;
       context.has_local = control_local_available;
       context.local = control_local;
       context.has_vins_age =

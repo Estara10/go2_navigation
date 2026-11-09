@@ -393,9 +393,14 @@ void testVinsWire() {
         "wire reject unknown native command");
 
   g::VinsBridgeMessage message;
-  check(g::decodeBridgeMessage(g::encodeOriginOk(), &message, &error) &&
-            message.type == g::VinsBridgeMessageType::OriginOk,
-        "wire decode ORIGIN_OK");
+  check(g::decodeBridgeMessage(g::encodeOriginOk(false), &message, &error) &&
+            message.type == g::VinsBridgeMessageType::OriginOk &&
+            !message.measured,
+        "wire decode ORIGIN_OK measured false");
+  check(g::decodeBridgeMessage(g::encodeOriginOk(true), &message, &error) &&
+            message.type == g::VinsBridgeMessageType::OriginOk &&
+            message.measured,
+        "wire decode ORIGIN_OK measured true");
   check(g::decodeBridgeMessage(g::encodeOriginFail(g::VinsReason::NoVins),
                                &message, &error) &&
             message.type == g::VinsBridgeMessageType::OriginFail &&
@@ -409,36 +414,53 @@ void testVinsWire() {
   state.y = -2.5;
   state.z = 0.3;
   state.yaw = 0.75;
+  state.vx = 0.11;
+  state.vy = -0.03;
+  state.wz = 0.22;
   state.valid = true;
   state.reason = g::VinsReason::Ok;
+  state.measured = true;
   check(g::decodeBridgeMessage(g::encodeState(state), &message, &error) &&
             message.type == g::VinsBridgeMessageType::State &&
             message.state.seq == 42 && message.state.valid &&
-            message.state.reason == g::VinsReason::Ok,
+            message.state.reason == g::VinsReason::Ok &&
+            message.state.measured,
         "wire decode valid STATE");
   checkNear(message.state.stamp_s, state.stamp_s, "wire STATE stamp", 1e-9);
   checkNear(message.state.x, state.x, "wire STATE x");
   checkNear(message.state.yaw, state.yaw, "wire STATE yaw");
+  checkNear(message.state.vx, state.vx, "wire STATE vx");
+  checkNear(message.state.vy, state.vy, "wire STATE vy");
+  checkNear(message.state.wz, state.wz, "wire STATE wz");
 
   state.valid = false;
   state.reason = g::VinsReason::Stale;
+  state.measured = false;
   check(g::decodeBridgeMessage(g::encodeState(state), &message, &error) &&
             !message.state.valid &&
-            message.state.reason == g::VinsReason::Stale,
+            message.state.reason == g::VinsReason::Stale &&
+            !message.state.measured,
         "wire decode invalid STATE");
 
   check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 8", &message, &error),
         "wire reject missing STATE field");
-  check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 2 OK", &message, &error),
+  check(!g::decodeBridgeMessage(
+            "STATE 1 2 3 4 5 6 7 8 9 2 OK 0", &message, &error),
         "wire reject invalid valid flag");
-  check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 1 STALE", &message,
-                                &error),
+  check(!g::decodeBridgeMessage(
+            "STATE 1 2 3 4 5 6 7 8 9 1 STALE 0", &message, &error),
         "wire reject valid with non-OK reason");
-  check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 0 OK", &message, &error),
+  check(!g::decodeBridgeMessage(
+            "STATE 1 2 3 4 5 6 7 8 9 0 OK 0", &message, &error),
         "wire reject invalid with OK reason");
-  check(!g::decodeBridgeMessage("STATE -1 2 3 4 5 6 7 0 STALE", &message,
-                                &error),
+  check(!g::decodeBridgeMessage(
+            "STATE 1 2 3 4 5 6 7 8 9 1 OK 2", &message, &error),
+        "wire reject invalid measured flag");
+  check(!g::decodeBridgeMessage(
+            "STATE -1 2 3 4 5 6 7 8 9 0 STALE 0", &message, &error),
         "wire reject negative sequence");
+  check(!g::decodeBridgeMessage("ORIGIN_OK", &message, &error),
+        "wire reject ORIGIN_OK without measured");
 
   for (const g::VinsReason reason :
        {g::VinsReason::Ok, g::VinsReason::NoNav, g::VinsReason::NoVins,

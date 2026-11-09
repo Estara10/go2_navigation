@@ -91,7 +91,7 @@ void runFakeBridge(std::atomic<bool>* stop, std::atomic<bool>* ready) {
     if (set_origin) {
       ++origin_requests;
       if (origin_requests == 1) {
-        sendToState(socket_fd, go2_nav::encodeOriginOk());
+        sendToState(socket_fd, go2_nav::encodeOriginOk(true));
         go2_nav::VinsWireState state;
         state.received = true;
         state.seq = 1;
@@ -100,8 +100,12 @@ void runFakeBridge(std::atomic<bool>* stop, std::atomic<bool>* ready) {
         state.y = -0.5;
         state.z = 0.0;
         state.yaw = 0.3;
+        state.vx = 0.4;
+        state.vy = -0.1;
+        state.wz = 0.2;
         state.valid = true;
         state.reason = go2_nav::VinsReason::Ok;
+        state.measured = true;
         sendToState(socket_fd, go2_nav::encodeState(state));
       } else {
         sendToState(socket_fd,
@@ -116,8 +120,12 @@ void runFakeBridge(std::atomic<bool>* stop, std::atomic<bool>* ready) {
       state.x = 2.0;
       state.y = 0.25;
       state.yaw = -0.1;
+      state.vx = 0.0;
+      state.vy = 0.0;
+      state.wz = 0.0;
       state.valid = true;
       state.reason = go2_nav::VinsReason::Ok;
+      state.measured = true;
       sendToState(socket_fd, go2_nav::encodeState(state));
     }
   }
@@ -153,10 +161,12 @@ int main() {
 
   go2_native_motion::VinsUdpClient client(kControlPort, kStatePort);
   std::string error;
+  bool measured = false;
   check(client.open(&error), "udp client open: " + error);
 
-  check(client.requestOrigin(&error, 1.0),
+  check(client.requestOrigin(&error, 1.0, &measured),
         "udp ORIGIN_OK handshake: " + error);
+  check(measured, "udp ORIGIN_OK measured true");
 
   go2_nav::VinsWireState state;
   check(waitForState(&client, &state, 1), "udp STATE received");
@@ -165,9 +175,15 @@ int main() {
   check(std::abs(state.x - 1.25) < 1e-9, "udp STATE x");
   check(std::abs(state.y + 0.5) < 1e-9, "udp STATE y");
   check(std::abs(state.yaw - 0.3) < 1e-9, "udp STATE yaw");
+  check(std::abs(state.vx - 0.4) < 1e-9, "udp STATE vx");
+  check(std::abs(state.vy + 0.1) < 1e-9, "udp STATE vy");
+  check(std::abs(state.wz - 0.2) < 1e-9, "udp STATE wz");
+  check(state.measured, "udp STATE measured");
 
   error.clear();
-  check(!client.requestOrigin(&error, 1.0), "udp ORIGIN_FAIL rejected");
+  measured = true;
+  check(!client.requestOrigin(&error, 1.0, &measured),
+        "udp ORIGIN_FAIL rejected");
   check(error == "NO_VINS", "udp ORIGIN_FAIL reason: " + error);
 
   client.requestPing();

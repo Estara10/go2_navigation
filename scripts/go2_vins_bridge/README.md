@@ -47,8 +47,8 @@ cmake --build build/go2_vins_bridge_core --parallel 2
 
 测试覆盖：
 
-- `go2_vins_bridge_selftest`：外参配置/光学旋转、无 nav/无 VINS、origin、位置/航向、STALE、JUMP、RESET、NONFINITE、UDP 服务端回环。
-- `go2_vins_bridge_integration_test`：合成 VINS → `BridgeCore` → UDP 服务端 → 原生 `VinsUdpClient` → `runInteractiveSession`（假 Go2 Backend）；检查 origin 成功、plan 发出 `vy=0` Move、VINS 停流后 `VINS_INVALID` 停车、停止后无 `cmd`。
+- `go2_vins_bridge_selftest`：外参配置/光学旋转、无 nav/无 VINS、origin、位置/航向/vx/vy/wz、measured、STALE、JUMP、RESET、NONFINITE、UDP 服务端回环。
+- `go2_vins_bridge_integration_test`：合成 VINS → `BridgeCore` → UDP 服务端 → 原生 `VinsUdpClient` → `runInteractiveSession`（假 Go2 Backend）；检查 origin 成功、plan 发出 `vy=0` Move、VINS 停流后 `VINS_INVALID` 停车、停止后无 `cmd`；`measured=0` 通过显式覆盖放行并写入 CSV。
 - 两者都不链接 ROS/SDK、不初始化 DDS。
 
 ## 3. 启动顺序
@@ -75,7 +75,7 @@ source /opt/ros/humble/setup.bash
   --csv ...
 ```
 
-4. 在原生工具中确认状态新鲜后输入 `origin`；原生工具向桥接发送 `SET_ORIGIN`，桥接用当前 VINS `base_link` 位姿建立 nav 并回复 `ORIGIN_OK`。失败时 `ORIGIN_FAIL <reason>`，原生工具不进入运动。
+4. 在原生工具中确认状态新鲜后输入 `origin`；原生工具向桥接发送 `SET_ORIGIN`，桥接用当前 VINS `base_link` 位姿建立 nav 并回复 `ORIGIN_OK <measured>`。失败时 `ORIGIN_FAIL <reason>`，原生工具不进入运动。`measured=0` 时原生工具默认拒绝 origin，除非显式 `--allow-unmeasured-extrinsic`。
 
 桥接可以先启动，也可以后启动；`SET_ORIGIN` 必须有有效 VINS 样本才能成功。
 
@@ -93,18 +93,21 @@ PING
 桥接→原生（状态端口，默认 46002）：
 
 ```text
-ORIGIN_OK
+ORIGIN_OK <measured>
 ORIGIN_FAIL <reason>
-STATE <seq> <stamp> <x> <y> <z> <yaw> <valid> <reason>
+STATE <seq> <stamp> <x> <y> <z> <yaw> <vx> <vy> <wz> <valid> <reason> <measured>
 ```
 
 - `seq`：状态序号，uint64。
 - `stamp`：桥接电脑的 `CLOCK_MONOTONIC` 秒。
 - `x/y/z`：`base_link` 原点在桥接 nav 系中的位置，m。
 - `yaw`：`base_link` +X 相对 nav +X，左转为正，rad。
+- `vx/vy`：`base_link` 原点速度，表达在 `base_link`，m/s。
+- `wz`：绕 Z 角速度，左转为正，rad/s。
 - `valid`：`1` 或 `0`。
 - `reason`：`OK`、`NO_NAV`、`NO_VINS`、`STALE`、`NONFINITE`、`JUMP`、`RESET`。
 - `valid=1` 时 reason 必须为 `OK`；`valid=0` 时 reason 不能为 `OK`。
+- `measured`：`1` 表示 `T_base_cam` 已实测，`0` 表示临时/未标定；`ORIGIN_OK` 和每条 `STATE` 都携带。
 
 `PING` 的响应是一条当前 `STATE`（不额外定义 `PONG`）。
 
@@ -132,7 +135,9 @@ STATE <seq> <stamp> <x> <y> <z> <yaw> <valid> <reason>
 ## 7. 外参与测量边界
 
 - 默认读取 `scripts/go2_nav_plan/config/d435i_provisional.conf`；当前 `measured=0`，只是临时外参。
-- 启动日志会打印 `measured=0/1`；`measured=0` 时**不得用于实机控制或 5 cm 验收**。
+- 启动日志和 1 Hz 诊断会打印 `measured=0/1`；`ORIGIN_OK`/`STATE` 也携带机器可读的 `measured` 字段。
+- 原生工具默认拒绝 `measured=0` 的 origin/plan/goto；只有 `--allow-unmeasured-extrinsic` 才允许，且日志/CSV 标记覆盖状态。
+- `measured=0` 时**不得用于实机控制或 5 cm 验收**。
 - `body_T_cam0/1` 是相机到相机 IMU 的 VINS 外参；桥接的 `T_base_cam` 是相机 IMU 到 Go2 `base_link` 的安装外参，两者不同。
 - 正式控制前必须按 `docs/MEASUREMENT_CHECKLIST.md` 实测 `T_base_cam` 和物理 `base_link`。
 

@@ -56,6 +56,7 @@ struct Config {
   ControlSource control_source = ControlSource::Native;
   double vins_timeout_s = 0.5;
   double vins_origin_timeout_s = 2.0;
+  bool allow_unmeasured_extrinsic = false;
   std::string csv_path;
 };
 
@@ -161,7 +162,8 @@ class VinsClient {
  public:
   virtual ~VinsClient() = default;
   virtual go2_nav::VinsWireState snapshot() = 0;
-  virtual bool requestOrigin(std::string* error, double timeout_s) = 0;
+  virtual bool requestOrigin(std::string* error, double timeout_s,
+                             bool* measured) = 0;
   virtual void requestPing() = 0;
 };
 

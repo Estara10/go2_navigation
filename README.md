@@ -35,7 +35,7 @@
 
 - 原生 `SportClient.Move/StopMove` 终端工具：10 Hz 重发、状态超时停止、`StopMove` 失败锁存、CSV 记录。
 - 原生工具已加入 `pulse vx duration`（0.1–0.5 s 短脉冲，测步长/停车距离）和 `plan forward left`；`goto` 保留初始原点固定点语义，但改为一次生成的路径 + Pure Pursuit，所有正常运动 `vy=0`，不再侧移。
-- `--control-source vins` 已离线接入：`scripts/go2_vins_bridge/` 把 VINS 位姿经 `T_base_cam` 转成 `base_link`，通过 UDP 发给原生工具；valid=0/包超时立即停止，不回退原生位置。
+- `--control-source vins` 已离线接入：`scripts/go2_vins_bridge/` 把 VINS 位姿/速度经 `T_base_cam` 转成 `base_link`，通过 UDP 发给原生工具；valid=0/包超时立即停止，不回退原生位置。`measured=0` 默认拒绝 origin/plan/goto；只有 `--allow-unmeasured-extrinsic` 可用于离线/机制验证。
 - 当前原生工具默认仍用 `SportModeState` 本地位姿做**机制验证**；VINS 桥/UDP 未在真实 VINS 或实机上运行，不是 5 cm 验收。
 - VINS 可构建、可输出位姿和速度，但精度、尺度、停后稳定性、相机到机身外参都未验证。
 - `scripts/go2_nav_core/` 已有 `BodyState`/`VelocityCommand` 接口、相机 IMU→`base_link` 变换、杠杆臂补偿、nav 系转换、相对目标一次性转换和 valid 判据；`T_base_cam` 仍为未实测状态，测试只用合成值。

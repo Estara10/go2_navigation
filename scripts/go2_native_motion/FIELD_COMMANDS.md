@@ -57,15 +57,17 @@ env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
 ```
 
 4. 等待原生状态就绪；确认桥接日志显示 `measured=0/1`。当前临时外参为 `measured=0`，**不得用于实机控制或 5 cm 验收**。
+   - 原生工具默认拒绝 `measured=0` 的 origin/plan/goto。
+   - 只有离线/机制验证可显式加 `--allow-unmeasured-extrinsic`；CSV 会记录 `vins_measured=0`、`measured_override=1`。
 5. 机器人静止且 VINS 状态有效后输入：
 
 ```text
 命令> origin
 ```
 
-原生工具向桥接发送 `SET_ORIGIN`，等待 `ORIGIN_OK`。只有成功才记录起点；`ORIGIN_FAIL <reason>` 时不进入运动，先检查 VINS/桥接。
+原生工具向桥接发送 `SET_ORIGIN`，等待 `ORIGIN_OK <measured>`。`measured=0` 且未加 `--allow-unmeasured-extrinsic` 时，原生工具拒绝 origin，不进入运动；`ORIGIN_FAIL <reason>` 时先检查 VINS/桥接。只有成功才记录起点。
 
-6. 用 `status` 查看 `control_source=vins`、`vins_valid`、`vins_reason`、`vins seq/stamp/age`。然后按已审阅范围使用：
+6. 用 `status` 查看 `control_source=vins`、`vins_valid`、`vins_reason`、`vins seq/stamp/age`、`vx/vy/wz`、`measured`、`measured_override`。然后按已审阅范围使用：
 
 ```text
 命令> plan 0.5 0
@@ -73,12 +75,13 @@ env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
 命令> yaw 30
 ```
 
-vins 模式下 `plan`/`goto`/`yaw` 使用 VINS `BodyState`；`straight`/`pulse` 只允许 `--control-source native`，会被拒绝。所有正常运动仍 `vy=0`。
+vins 模式下 `plan`/`goto`/`yaw` 使用 VINS `BodyState`（含 `vx/vy/wz`）；`straight`/`pulse` 只允许 `--control-source native`，会被拒绝。所有正常运动仍 `vy=0`。
 
 失效处理：
 
 - `vins_valid=0`（`NO_NAV`、`NO_VINS`、`STALE`、`NONFINITE`、`JUMP`、`RESET`）或 STATE 包龄超过 `--vins-timeout-s` 时，原生工具立即停止并记录 `VINS_INVALID`。
 - **不切回原生位置继续运动**。确认 VINS/桥接恢复后，通常需要 `quit` 重启并重新 `origin`。
+- `measured=0` 默认拒绝 origin/plan/goto；显式覆盖时仍不得用于 5 cm 验收。
 - 停止失败锁存仍有效：`StopMove` 失败后本会话拒绝运动命令，只允许 `status`、`stop`、`quit`。
 - 桥接只发状态，不发运动；原生工具仍是唯一运动发送入口。
 

@@ -84,7 +84,7 @@
 
 `±180°` 统一按回绕后的 `+π`（左转）处理。`yaw 190` 会规范化为相对初始朝向的 `-170°`，按最短角度转过去；`yaw 270` 等价于 `yaw -90`。
 
-本工具内部按 `position` 为米、原生 yaw 为弧度、左转为正、`position`/yaw 同一右手坐标系进行目标转换和路径跟踪。以上单位、符号和同系假设尚未在本台 Go2 上实测；首次 `goto`/`plan`/`yaw` 必须小范围核对，方向或尺度不符立即停止。原生速度坐标系未核实用于控制，`BodyState.velocity_mps` 固定置 0，只用位置和航向。
+本工具内部按 `position` 为米、原生 yaw 为弧度、左转为正、`position`/yaw 同一右手坐标系进行目标转换和路径跟踪。以上单位、符号和同系假设尚未在本台 Go2 上实测；首次 `goto`/`plan`/`yaw` 必须小范围核对，方向或尺度不符立即停止。原生速度坐标系仍未完全核实；native 模式使用 `SportModeState` velocity 作为 Pure Pursuit 前视速度（不是独立真值），vins 模式使用桥接的 `vx/vy/wz`。
 
 ## 终端命令
 
@@ -182,11 +182,12 @@
 
 - 需要另行构建并启动 `scripts/go2_vins_bridge/`；它订阅 `/vins/odometry`，用 `T_base_cam` 转成 `base_link`，通过 UDP 发给本工具。原生工具**不链接 ROS/rclcpp**，也不初始化额外的 ROS 节点。
 - 本工具在 vins 模式下仍初始化 Go2 SDK DDS，因为 `Move/StopMove` 和原生状态订阅仍需要；原生 `SportModeState` 只用于状态显示和停止，不参与控制。
-- `origin` 改为向桥接发送 `SET_ORIGIN` 并等待 `ORIGIN_OK`；`ORIGIN_FAIL <reason>` 时不记录起点、不进入运动。
+- `origin` 改为向桥接发送 `SET_ORIGIN` 并等待 `ORIGIN_OK <measured>`；`ORIGIN_FAIL <reason>` 时不记录起点、不进入运动。
+- `measured` 是机器可读字段：`ORIGIN_OK` 和每条 `STATE` 都携带。`measured=0` 默认拒绝 origin/plan/goto，不进入运动；只有显式 `--allow-unmeasured-extrinsic` 才允许，用于离线/机制验证，日志和 CSV 标记覆盖状态，仍不得用于实机控制或 5 cm 验收。
 - `plan`/`goto`/`yaw` 使用 VINS `BodyState`；`straight`/`pulse` 只允许 `--control-source native`，在 vins 模式直接拒绝。
 - VINS `valid=0`、包龄超过 `--vins-timeout-s`（默认 0.5 s）或桥接不存在时立即停止，记录 `VINS_INVALID`；**不回退原生位置继续走**。
 - 默认端口：桥接控制口 46001，原生状态口 46002；可用 `--vins-control-port`、`--vins-state-port` 配置。两侧必须运行在同一台电脑，使用同一 `CLOCK_MONOTONIC`。
-- 临时外参 `T_base_cam` 的 `measured=0/1` 由桥接日志给出；本工具不读取或猜测外参。`measured=false` 时不得用于实机控制或 5 cm 验收。
+- VINS `STATE` 的 `vx/vy/wz` 填入 `BodyState.velocity_mps`/`yaw_rate_radps`，用于 Pure Pursuit 的前视速度；`vins_measured`/`measured_override` 写入 CSV。
 
 详细协议、时钟和 valid 原因见 [`docs/INTERFACE.md`](../../docs/INTERFACE.md) 与 [`scripts/go2_vins_bridge/README.md`](../go2_vins_bridge/README.md)。
 
@@ -245,7 +246,8 @@ cmake --build "$PROJECT_ROOT/build/native_motion-sdk" --parallel 2
 - `StopMove` 返回非零或抛异常后保持失败状态：继续输入运动命令被拒绝且不产生 `Move`；允许再次 `stop`，但不会自动重试；后续 `stop` 返回 0 也不恢复运动；退出码为 3；
 - 命令解析和 `--vx/--duration-s` 上限（0.50 m/s、30 s 可接受；超出拒绝）；
 - `--control-source vins`：origin 握手成功/失败、VINS 状态驱动 plan、valid=0/包超时立即 `VINS_INVALID` 停止、不回退原生位置、`straight/pulse` 被拒绝；
-- UDP 回环：`SET_ORIGIN`/`PING` 编解码、ORIGIN_OK/FAIL、STATE 包和 `vy=0` 路径。
+- `measured=0` 默认拒绝 origin/plan/goto；`--allow-unmeasured-extrinsic` 覆盖后可 origin，CSV 标记 `vins_measured=0`、`measured_override=1`；
+- UDP 回环：`SET_ORIGIN`/`PING` 编解码、ORIGIN_OK/FAIL、STATE 包（含 vx/vy/wz/measured）和 `vy=0` 路径。
 
 自检使用替代 `Backend`、替代 `VinsClient`、模拟时钟和脚本化终端命令，不创建 `rt/lowcmd` 发布器，不初始化真实 DDS。VINS 测试使用合成 `VinsWireState`；UDP 回环只绑定 `127.0.0.1`，不连接 VINS/机器人。原生日姿只用于机制验证，不代表 D435i/VINS 或 5 cm 精度。
 
@@ -435,13 +437,15 @@ plan/goto 参数: vmax=0.300 m/s, approach=0.300 m/s（approach 为首轮防失�
 | `control_source` | `native` 或 `vins` |
 | `vins_valid`, `vins_reason` | VINS 状态是否可用及原因；native 模式为空 |
 | `vins_seq`, `vins_stamp`, `vins_age_s` | VINS 桥 STATE 序号、桥端 PC 单调时间戳和本工具计算的包龄；native 模式为空 |
+| `vins_vx`, `vins_vy`, `vins_wz` | VINS 桥 STATE 的机身速度/角速度；native 模式为空 |
+| `vins_measured`, `measured_override` | 桥接 `T_base_cam` 的 measured 标记，以及本会话是否用 `--allow-unmeasured-extrinsic` 覆盖；native 模式为空 |
 | `api_return` | `Move`/`StopMove` 的 SDK 返回码 |
 | `event` | `state_ready`、`terminal`、`terminal_rejected`、`origin_set`、`status`、`task_start`、`task_end`、`stop_request`、`stop_result`、`end` |
 | `detail` | 原始终端命令、任务结束原因、异常或停止失败信息 |
 
 `task_end` 的 `detail` 使用 `ARRIVED`、`COMPLETED`、`TIMEOUT`、`STOPPED`、`INTERRUPTED`、`STATE_STALE`、`VINS_INVALID`、`MOVE_API_ERROR`、`QUIT`。`stop_request` 之后不再写 `cmd` 行；`stop_result` 的原生字段是 `StopMove` 返回后的快照，仍不是实际停住的证明。
 
-vins 模式下 `origin_native_*` 和 `target_native_*` 为空；`origin_set` 的 detail 为 `vins_nav`。`vins_valid=0` 时 `vins_reason` 为 `NO_NAV`、`NO_VINS`、`STALE`、`NONFINITE`、`JUMP` 或 `RESET`。
+vins 模式下 `origin_native_*` 和 `target_native_*` 为空；`origin_set` 的 detail 为 `vins_nav measured=1` 或 `vins_nav measured=0 OVERRIDE`。`vins_valid=0` 时 `vins_reason` 为 `NO_NAV`、`NO_VINS`、`STALE`、`NONFINITE`、`JUMP` 或 `RESET`。`measured=0` 默认拒绝 origin/plan/goto；只有显式 `--allow-unmeasured-extrinsic` 才允许，CSV 记录 `vins_measured=0`、`measured_override=1`。
 
 停止失败后，`terminal_rejected` 和 `status` 的 `detail` 可能是 `stop_failed`；退出时 `end` 的 `detail` 可能是 `QUIT_STOP_FAILED` 或 `INTERRUPTED_STOP_FAILED`，表示本会话的停止失败状态在退出时仍未解除。`stop_result` 记录每次 `StopMove` 的返回码；后续 `stop` 返回 0 也不会解除本会话的失败状态。
 

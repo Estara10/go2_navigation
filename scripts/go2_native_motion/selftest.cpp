@@ -149,13 +149,75 @@ bool cmdRowsVinsValid(const std::string& csv, const std::string& valid) {
   return cmd_rows > 0 && all_match;
 }
 
+bool cmdRowsVinsMeasured(const std::string& csv, const std::string& measured) {
+  std::istringstream stream(csv);
+  std::string line;
+  int cmd_rows = 0;
+  bool all_match = true;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 39 || fields[2] != "cmd") {
+      continue;
+    }
+    ++cmd_rows;
+    if (fields[39] != measured) {
+      all_match = false;
+    }
+  }
+  return cmd_rows > 0 && all_match;
+}
+
+bool cmdRowsMeasuredOverride(const std::string& csv,
+                             const std::string& override_value) {
+  std::istringstream stream(csv);
+  std::string line;
+  int cmd_rows = 0;
+  bool all_match = true;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 40 || fields[2] != "cmd") {
+      continue;
+    }
+    ++cmd_rows;
+    if (fields[40] != override_value) {
+      all_match = false;
+    }
+  }
+  return cmd_rows > 0 && all_match;
+}
+
+bool cmdRowsVinsVelocity(const std::string& csv, double vx, double vy,
+                         double wz) {
+  std::istringstream stream(csv);
+  std::string line;
+  int cmd_rows = 0;
+  bool all_match = true;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 38 || fields[2] != "cmd") {
+      continue;
+    }
+    ++cmd_rows;
+    try {
+      if (std::abs(std::stod(fields[36]) - vx) > 1e-6 ||
+          std::abs(std::stod(fields[37]) - vy) > 1e-6 ||
+          std::abs(std::stod(fields[38]) - wz) > 1e-6) {
+        all_match = false;
+      }
+    } catch (...) {
+      all_match = false;
+    }
+  }
+  return cmd_rows > 0 && all_match;
+}
+
 bool taskStartPulseFields(const std::string& csv, double* vx, double* duration) {
   std::istringstream stream(csv);
   std::string line;
   while (std::getline(stream, line)) {
     const std::vector<std::string> fields = splitCsvLine(line);
-    if (fields.size() <= 37 || fields[3] != "pulse" ||
-        fields[2] != "event" || fields[37] != "task_start") {
+    if (fields.size() <= 42 || fields[3] != "pulse" ||
+        fields[2] != "event" || fields[42] != "task_start") {
       continue;
     }
     try {
@@ -246,7 +308,8 @@ class FakeVinsClient final : public g::VinsClient {
     return state;
   }
 
-  bool requestOrigin(std::string* error, double /*timeout_s*/) override {
+  bool requestOrigin(std::string* error, double /*timeout_s*/,
+                     bool* measured_out) override {
     ++origin_requests;
     if (!origin_ok) {
       if (error != nullptr) {
@@ -257,12 +320,16 @@ class FakeVinsClient final : public g::VinsClient {
     state.received = true;
     state.valid = true;
     state.reason = go2_nav::VinsReason::Ok;
+    state.measured = measured;
     ++state.seq;
     state.stamp_s = clock_.now;
     state.x = 0.0;
     state.y = 0.0;
     state.z = 0.0;
     state.yaw = 0.0;
+    if (measured_out != nullptr) {
+      *measured_out = measured;
+    }
     return true;
   }
 
@@ -273,6 +340,7 @@ class FakeVinsClient final : public g::VinsClient {
     state.received = true;
     state.valid = valid;
     state.reason = reason;
+    state.measured = measured;
     ++state.seq;
     state.stamp_s = clock_.now;
     state.x = x;
@@ -285,6 +353,7 @@ class FakeVinsClient final : public g::VinsClient {
   go2_nav::VinsWireState state;
   bool origin_ok = true;
   bool auto_stamp = true;
+  bool measured = true;
   std::string origin_error = "NO_VINS";
   int origin_requests = 0;
   int ping_requests = 0;
@@ -849,7 +918,11 @@ void testVinsControlSource() {
     test_case.backend.state.position = {5.0, 5.0, 0.30};
     test_case.backend.state.yaw_rad = 1.0;
     test_case.script.add(0.0, "origin");
-    test_case.script.add(0.1, "plan 0.5 0");
+    test_case.script.add(0.1, "plan 0.5 0", [&test_case] {
+      test_case.vins_client.state.vx = 0.15;
+      test_case.vins_client.state.vy = 0.05;
+      test_case.vins_client.state.wz = 0.25;
+    });
     test_case.script.add(0.6, "stop");
     test_case.script.add(1.0, "quit");
     run(test_case);
@@ -859,9 +932,15 @@ void testVinsControlSource() {
     check(test_case.backend.move_calls > 0, "vins plan sends Moves");
     check(cmdRowsHaveTarget(csv, 0.5, 0.0),
           "vins plan target uses VINS local frame");
+    check(cmdRowsVinsVelocity(csv, 0.15, 0.05, 0.25),
+          "vins plan CSV velocity fields");
     check(cmdRowsControlSource(csv, "vins"),
           "vins plan CSV control source");
     check(cmdRowsVinsValid(csv, "1"), "vins plan CSV valid field");
+    check(cmdRowsVinsMeasured(csv, "1"),
+          "vins plan CSV measured field");
+    check(cmdRowsMeasuredOverride(csv, "0"),
+          "vins plan CSV override field");
     checkNear(test_case.backend.last_vy, 0.0, "vins plan last vy zero");
     checkNoLateral(test_case, "vins_plan");
     check(csv.find("VINS_INVALID") == std::string::npos,
@@ -974,6 +1053,51 @@ void testVinsControlSource() {
     check(cmdRowsControlSource(test_case.csv.str(), "vins"),
           "vins yaw CSV control source");
     checkNoLateral(test_case, "vins_yaw");
+  }
+
+  // measured=false is rejected by default.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.vins_client.measured = false;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 0.5 0");
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.vins_client.origin_requests == 1,
+          "unmeasured origin requested once");
+    check(test_case.backend.move_calls == 0,
+          "unmeasured origin rejected without Move");
+    check(csv.find("unmeasured_extrinsic") != std::string::npos,
+          "unmeasured origin rejection marker");
+    check(csv.find("vins_origin_failed") == std::string::npos,
+          "unmeasured origin is not a bridge failure");
+  }
+
+  // Explicit override allows origin/plan but marks measured=0 and override=1.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.config.allow_unmeasured_extrinsic = true;
+    test_case.vins_client.measured = false;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 0.5 0");
+    test_case.script.add(0.6, "stop");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.backend.move_calls > 0,
+          "unmeasured override allows Moves");
+    check(cmdRowsVinsMeasured(csv, "0"),
+          "unmeasured override CSV measured=0");
+    check(cmdRowsMeasuredOverride(csv, "1"),
+          "unmeasured override CSV override=1");
+    check(csv.find("measured=0 OVERRIDE") != std::string::npos,
+          "unmeasured override origin marker");
+    checkNoLateral(test_case, "unmeasured_override");
   }
 
   std::cout << (failures == before ? "PASS" : "FAIL")

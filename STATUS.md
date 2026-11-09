@@ -8,15 +8,16 @@
 
 ## 协作方式
 
-按定位与坐标、路径与跟踪、接口与实验三条工作流共享责任，不固定人员。先冻结接口，再各自实现；实机只保留一个运动命令发送入口。
+按定位与坐标、路径与跟踪、接口与实验三条工作流共享责任，不固定人员。日常只使用 `Lidio` 分支直接提交/推送，不新开功能分支、不逐任务建 PR；先冻结接口，再各自实现；实机只保留一个运动命令发送入口。
 
 ## 已完成
 
 - 2026-11-09：初始化 GitHub 仓库并推送 `main`，提交 `63f3294`，32 个文件。
-- 2026-11-09：T1 机身状态接口与相机 IMU→`base_link` 离线变换；分支 `feat/body-state-interface`，PR #1；模块 `scripts/go2_nav_core/`；接口冻结在 `docs/INTERFACE.md`，测量清单在 `docs/MEASUREMENT_CHECKLIST.md`；离线构建和自检通过；`T_base_cam` 仍为未实测，测试只用合成值。
+- 2026-11-09：T1 机身状态接口与相机 IMU→`base_link` 离线变换；模块 `scripts/go2_nav_core/`；接口冻结在 `docs/INTERFACE.md`，测量清单在 `docs/MEASUREMENT_CHECKLIST.md`；离线构建和自检通过；`T_base_cam` 仍为未实测，测试只用合成值。
 - 2026-11-09：用临时外参 `(0.3475, 0, 0.0525)` + 相机光学旋转回放历史 VINS CSV；1341 行全部转换；`base_link` 末帧约 `(1.164, -0.204)` m；最大相邻跳变约 10.5 cm；仍是临时外参，不是 5 cm 证明。
 - 2026-11-09：原生工具接入短脉冲 `pulse` 和 `plan`；`goto` 改为一次生成的路径 + Pure Pursuit，删除侧移控制，所有正常运动 `vy=0`；离线自检、无 SDK/SDK 构建通过。仍是原生日姿机制验证，不是 VINS/5 cm。
-- 2026-11-09：VINS 实时桥接离线实现；分支 `feat/vins-body-state-bridge`；`scripts/go2_vins_bridge/` 提供 VINS 样本→`base_link`→UDP、origin 握手和 valid 原因；原生工具新增 `--control-source vins`，plan/goto/yaw 可用 VINS 状态，valid=0/包超时停止且不回退原生位置；桥接/原生/UDP 自检通过。未运行 ROS 节点或真实 VINS。
+- 2026-11-09：VINS 实时桥接离线实现；`scripts/go2_vins_bridge/` 提供 VINS 样本→`base_link`→UDP、origin 握手和 valid 原因；原生工具新增 `--control-source vins`，plan/goto/yaw 可用 VINS 状态，valid=0/包超时停止且不回退原生位置；桥接/原生/UDP 自检通过。未运行 ROS 节点或真实 VINS。
+- 2026-11-09：STATE 增加 `vx/vy/wz` 和机器可读 `measured`；原生 vins 模式默认拒绝 `measured=0`，只有 `--allow-unmeasured-extrinsic` 可覆盖；CSV 增加 `vins_vx/vy/wz`、`vins_measured`、`measured_override`；离线自检通过。
 - 工程独立化：目录、文档、去个人路径、构建选项已整理；无 SDK 构建和自检、SDK 构建、`ON` 缺 SDK 失败均有记录。本轮未重跑构建。
 - 原生工具：`Move/StopMove`、10 Hz 重发、状态超时停止、停止失败锁存、CSV、离线自检。
 - VINS：固定提交、补丁、480×270 候选配置、独立构建说明。
@@ -31,6 +32,7 @@
 - 原生工具 `pulse`/`plan`/`goto` 离线自检通过；`straight`、`pulse`、`goto`、`plan` 的 Move 和 CSV `cmd_vy_mps` 均为 0；模拟到达/超时/状态超期/停止失败锁存均通过。
 - VINS 桥接核心/UDP 自检通过：`SET_ORIGIN`/`PING`、`ORIGIN_OK/FAIL`、`STATE` 编解码，`NO_NAV`/`NO_VINS`/`STALE`/`NONFINITE`/`JUMP`/`RESET`，UDP 回环。
 - 原生 vins 模式自检通过：origin 成功/失败、VINS 驱动 plan、valid=0/包超时立即 `VINS_INVALID` 停止、不回退、`straight/pulse` 拒绝、`vy=0`。
+- STATE 携带 `vx/vy/wz` 和 `measured`；VINS `vx/vy/wz` 进入 Pure Pursuit；`measured=0` 默认拒绝 origin/plan/goto，`--allow-unmeasured-extrinsic` 覆盖时 CSV 标记 `vins_measured=0`/`measured_override=1`。
 - 直线/Dubins 路径和 Pure Pursuit 离线模拟可用；A→B 直线和曲线均停稳，位置误差约 2 cm，`vy=0`。
 - 相对目标一次性转换和 `valid` 规则有离线测试。
 - 临时外参放在 `scripts/go2_nav_plan/config/d435i_provisional.conf`，`measured=0`。
@@ -133,10 +135,11 @@
 | 2026-11-09 | 工程独立化 | 基本完成，待轻量验收 | — | 构建/自检为记录，本轮未重跑 |
 | 2026-11-09 | 初始化 GitHub 仓库和 README | 完成 | `63f3294` | 32 个文件，未提交 build/logs |
 | 2026-11-09 | 建立状态文档 | 完成 | 待提交 | 本文档 |
-| 2026-11-09 | T1 机身状态接口与离线变换 | 完成（离线） | `feat/body-state-interface`，PR #1 | 自检通过；`T_base_cam` 未实测 |
-| 2026-11-09 | M1-1 离线回放 + M1-2 路径/跟踪原型 | 完成（离线） | `feat/native-pulse-plan` | VINS CSV→`BodyState`；Dubins + Pure Pursuit；模拟 A→B 约 2 cm；临时外参配置；实机未验证 |
-| 2026-11-09 | M1-3 原生工具脉冲 + 路径跟踪接入 | 完成（离线） | `feat/native-pulse-plan`，PR #2 | `pulse`/`plan`；`goto` 改用路径 + PP；`vy=0`；无 SDK/SDK 构建和自检通过；实机未运行 |
-| 2026-11-09 | M1-3 VINS/UDP 桥接 + native vins 模式 | 完成（离线） | `feat/vins-body-state-bridge`，PR #3 | VINS→base_link→UDP；origin 握手；valid=0/超时停止；桥接/原生/UDP 自检通过；未运行 ROS/VINS/实机 |
+| 2026-11-09 | T1 机身状态接口与离线变换 | 完成（离线） | Lidio | 自检通过；`T_base_cam` 未实测 |
+| 2026-11-09 | M1-1 离线回放 + M1-2 路径/跟踪原型 | 完成（离线） | Lidio | VINS CSV→`BodyState`；Dubins + Pure Pursuit；模拟 A→B 约 2 cm；临时外参配置；实机未验证 |
+| 2026-11-09 | M1-3 原生工具脉冲 + 路径跟踪接入 | 完成（离线） | Lidio | `pulse`/`plan`；`goto` 改用路径 + PP；`vy=0`；无 SDK/SDK 构建和自检通过；实机未运行 |
+| 2026-11-09 | M1-3 VINS/UDP 桥接 + native vins 模式 | 完成（离线） | Lidio | VINS→base_link→UDP；origin 握手；valid=0/超时停止；桥接/原生/UDP 自检通过；未运行 ROS/VINS/实机 |
+| 2026-11-09 | STATE 速度 + measured 拦截 | 完成（离线） | Lidio | `vx/vy/wz`、`measured`；默认拒绝 `measured=0`；`--allow-unmeasured-extrinsic` 覆盖并标记 CSV；离线自检通过 |
 
 ## 更新规则
 

@@ -166,24 +166,27 @@ target_nav.z = position_m.z
 | 方向 | 默认端口 | 内容 |
 |---|---:|---|
 | 原生 → 桥接 | 46001 | `SET_ORIGIN`、`PING` |
-| 桥接 → 原生 | 46002 | `ORIGIN_OK`、`ORIGIN_FAIL <reason>`、`STATE ...` |
+| 桥接 → 原生 | 46002 | `ORIGIN_OK <measured>`、`ORIGIN_FAIL <reason>`、`STATE ...` |
 
 消息为单个 UDP datagram 的 ASCII 文本，行尾 `\n` 可省略。
 
 ```text
 SET_ORIGIN
 PING
-ORIGIN_OK
+ORIGIN_OK <measured>
 ORIGIN_FAIL <reason>
-STATE <seq> <stamp> <x> <y> <z> <yaw> <valid> <reason>
+STATE <seq> <stamp> <x> <y> <z> <yaw> <vx> <vy> <wz> <valid> <reason> <measured>
 ```
 
 - `seq`：桥接状态序号，uint64。
 - `stamp`：桥接电脑 `CLOCK_MONOTONIC` 秒，不是 VINS header 时间。
 - `x/y/z`：`base_link` 原点在 nav 中的位置，m。
 - `yaw`：`base_link` +X 相对 nav +X，左转为正，rad。
+- `vx/vy`：`base_link` 原点速度，表达在 `base_link`，m/s。
+- `wz`：绕 Z 角速度，左转为正，rad/s。
 - `valid`：`1` 或 `0`。
 - `reason`：`OK`、`NO_NAV`、`NO_VINS`、`STALE`、`NONFINITE`、`JUMP`、`RESET`；`valid=1` 必须为 `OK`，`valid=0` 不能为 `OK`。
+- `measured`：`1` 表示 `T_base_cam` 已实测，`0` 表示临时/未标定外参。`ORIGIN_OK` 和每条 `STATE` 都携带。
 
 时钟语义：
 
@@ -197,6 +200,8 @@ STATE <seq> <stamp> <x> <y> <z> <yaw> <valid> <reason>
 - 原生工具 `--control-source native`（默认）使用 `SportModeState`，保持旧行为。
 - `--control-source vins` 时，`plan`/`goto`/`yaw` 使用 VINS `BodyState`；`straight`/`pulse` 只允许 native 模式。
 - VINS `valid=0`、包超时或桥接失效时立即停止，不静默回退到原生位置继续控制。
+- **`measured=0` 默认拒绝 origin/plan/goto；** 只有显式 `--allow-unmeasured-extrinsic` 才允许，用于离线/机制验证，仍不得用于实机控制或 5 cm 验收。
+- 覆盖时日志警告；CSV 的 `vins_measured=0`、`measured_override=1` 记录该状态。
 - 桥接只发状态和 ORIGIN 响应，不发运动命令。
 
 ## 9. 本任务边界

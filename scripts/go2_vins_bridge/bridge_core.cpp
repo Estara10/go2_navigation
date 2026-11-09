@@ -144,6 +144,7 @@ go2_nav::VinsWireState BridgeCore::makeState(double now_s) {
   out.received = true;
   out.seq = ++seq_;
   out.stamp_s = now_s;
+  out.measured = config_.extrinsic.measured;
 
   auto invalid = [&](go2_nav::VinsReason why) {
     out.valid = false;
@@ -179,6 +180,9 @@ go2_nav::VinsWireState BridgeCore::makeState(double now_s) {
   out.y = last_state_.position_m.y;
   out.z = last_state_.position_m.z;
   out.yaw = last_state_.yaw_rad;
+  out.vx = last_state_.velocity_mps.x;
+  out.vy = last_state_.velocity_mps.y;
+  out.wz = last_state_.yaw_rate_radps;
   return out;
 }
 

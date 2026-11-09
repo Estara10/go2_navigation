@@ -115,6 +115,7 @@ void VinsUdpClient::drain() {
         break;
       case go2_nav::VinsBridgeMessageType::OriginOk:
         origin_ok_ = true;
+        origin_measured_ = message.measured;
         break;
       case go2_nav::VinsBridgeMessageType::OriginFail:
         origin_failed_ = true;
@@ -131,7 +132,8 @@ go2_nav::VinsWireState VinsUdpClient::snapshot() {
   return state_;
 }
 
-bool VinsUdpClient::requestOrigin(std::string* error, double timeout_s) {
+bool VinsUdpClient::requestOrigin(std::string* error, double timeout_s,
+                                  bool* measured) {
   if (socket_ < 0) {
     if (error != nullptr) {
       *error = "VINS UDP socket is not open";
@@ -146,6 +148,7 @@ bool VinsUdpClient::requestOrigin(std::string* error, double timeout_s) {
   }
   origin_ok_ = false;
   origin_failed_ = false;
+  origin_measured_ = false;
   origin_error_.clear();
   if (!sendCommand(go2_nav::encodeSetOriginCommand(), error)) {
     return false;
@@ -178,6 +181,9 @@ bool VinsUdpClient::requestOrigin(std::string* error, double timeout_s) {
     }
     drain();
     if (origin_ok_) {
+      if (measured != nullptr) {
+        *measured = origin_measured_;
+      }
       return true;
     }
     if (origin_failed_) {

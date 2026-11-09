@@ -127,6 +127,8 @@ void printUsage(const char* program) {
       << "--control-source native|vins（默认 native）；vins 时 plan/goto/yaw "
          "使用 UDP VINS 桥状态，\n"
       << "straight/pulse 仍要求 --control-source native。\n"
+      << "vins 模式默认拒绝 T_base_cam measured=false；仅离线/机制验证可用\n"
+      << "--allow-unmeasured-extrinsic 显式覆盖，仍不得用于 5 cm 验收。\n"
       << "--vins-control-port 46001 --vins-state-port 46002"
          " --vins-timeout-s 0.5 --vins-origin-timeout-s 2.0\n"
       << "默认 CSV: logs/go2_native_motion/<UTC时间戳>/native_motion.csv\n"
@@ -199,6 +201,8 @@ int parseArgs(int argc, char** argv, Options& options, std::string& error) {
         error = "--control-source 必须是 native 或 vins";
         return 2;
       }
+    } else if (key == "--allow-unmeasured-extrinsic") {
+      options.config.allow_unmeasured_extrinsic = true;
     } else if (key == "--vins-control-port") {
       std::string value;
       if (!takeValue(value)) return 2;
@@ -529,6 +533,10 @@ int main(int argc, char** argv) {
     std::cout << "VINS UDP: 发送到 127.0.0.1:" << options.vins_control_port
               << ", 监听 127.0.0.1:" << options.vins_state_port
               << ", 包超时 " << options.config.vins_timeout_s << " s\n";
+    if (options.config.allow_unmeasured_extrinsic) {
+      std::cout << "!! 已允许未测量外参（measured=0 可 origin）；"
+                   "仅离线/机制验证，不得用于实机控制或 5 cm 验收。\n";
+    }
   }
   std::cout << "正常运动只发送 vx/vyaw，vy=0；plan/goto 使用一次生成的路径。\n"
             << "普通命令按 Enter 执行；Ctrl+C 立即中断任务并尝试 StopMove。\n";

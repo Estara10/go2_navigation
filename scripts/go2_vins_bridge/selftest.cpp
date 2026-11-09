@@ -159,16 +159,32 @@ void testCoreOriginAndState() {
   go2_nav::VinsWireState state = core.makeState(0.0);
   check(state.valid && state.reason == go2_nav::VinsReason::Ok,
         "bridge origin state valid");
+  check(!state.measured, "bridge origin measured false");
   check(std::abs(state.x) < 1e-12 && std::abs(state.y) < 1e-12,
         "bridge origin x/y zero");
 
-  const auto moved = makeSample(1.1, 0.1, 1.0, 0.0, 0.2);
+  go2_vins_bridge::BridgeConfig measured_config = makeConfig();
+  measured_config.extrinsic.measured = true;
+  go2_vins_bridge::BridgeCore measured_core(measured_config);
+  measured_core.onVinsSample(sample, 0.0);
+  go2_nav::VinsReason measured_reason = go2_nav::VinsReason::NoVins;
+  check(measured_core.setOrigin(0.0, &measured_reason),
+        "bridge measured origin succeeds");
+  check(measured_core.makeState(0.0).measured,
+        "bridge measured state true");
+
+  auto moved = makeSample(1.1, 0.1, 1.0, 0.0, 0.2);
+  moved.camera.body_twist_camera.linear = go2_nav::Vec3{0.2, 0.1, 0.0};
+  moved.camera.body_twist_camera.angular = go2_nav::Vec3{0.0, 0.0, 0.3};
   core.onVinsSample(moved, 0.1);
   state = core.makeState(0.1);
   check(state.valid, "bridge moved state valid");
   check(std::abs(state.x - 1.0) < 1e-9, "bridge moved x");
   check(std::abs(state.y) < 1e-9, "bridge moved y");
   check(std::abs(state.yaw - 0.2) < 1e-9, "bridge moved yaw");
+  check(std::abs(state.vx - 0.2) < 1e-9, "bridge moved vx");
+  check(std::abs(state.vy - 0.1) < 1e-9, "bridge moved vy");
+  check(std::abs(state.wz - 0.3) < 1e-9, "bridge moved wz");
 }
 
 void testCoreStaleJumpReset() {
@@ -255,7 +271,7 @@ void testUdpLoopback() {
     if (set_origin) {
       go2_nav::VinsReason result = go2_nav::VinsReason::NoVins;
       if (core.setOrigin(monotonicNow(), &result)) {
-        return go2_nav::encodeOriginOk();
+        return go2_nav::encodeOriginOk(core.extrinsic().measured);
       }
       return go2_nav::encodeOriginFail(result);
     }
@@ -275,8 +291,8 @@ void testUdpLoopback() {
         "bridge udp server poll origin: " + error);
   std::string response;
   check(recvWithTimeout(client, &response) == 0, "bridge udp ORIGIN response");
-  check(response.find("ORIGIN_OK") != std::string::npos,
-        "bridge udp ORIGIN_OK");
+  check(response.find("ORIGIN_OK 0") != std::string::npos,
+        "bridge udp ORIGIN_OK measured false");
 
   const std::string ping = go2_nav::encodePingCommand();
   check(::sendto(client, ping.data(), ping.size(), 0,
@@ -293,6 +309,11 @@ void testUdpLoopback() {
   check(message.type == go2_nav::VinsBridgeMessageType::State &&
             message.state.valid,
         "bridge udp STATE valid");
+  check(!message.state.measured, "bridge udp STATE measured false");
+  check(std::abs(message.state.vx) < 1e-9 &&
+            std::abs(message.state.vy) < 1e-9 &&
+            std::abs(message.state.wz) < 1e-9,
+        "bridge udp STATE velocity fields");
 
   ::close(client);
   server.close();
