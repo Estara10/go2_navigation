@@ -13,7 +13,7 @@
 ## 已完成
 
 - 2026-11-09：初始化 GitHub 仓库并推送 `main`，提交 `63f3294`，32 个文件。
-- 2026-11-09：T1 机身状态接口与相机 IMU→`base_link` 离线变换；分支 `feat/body-state-interface`；模块 `scripts/go2_nav_core/`；接口冻结在 `docs/INTERFACE.md`，测量清单在 `docs/MEASUREMENT_CHECKLIST.md`；离线构建和自检通过；`T_base_cam` 仍为未实测，测试只用合成值。
+- 2026-11-09：T1 机身状态接口与相机 IMU→`base_link` 离线变换；分支 `feat/body-state-interface`，PR #1；模块 `scripts/go2_nav_core/`；接口冻结在 `docs/INTERFACE.md`，测量清单在 `docs/MEASUREMENT_CHECKLIST.md`；离线构建和自检通过；`T_base_cam` 仍为未实测，测试只用合成值。
 - 工程独立化：目录、文档、去个人路径、构建选项已整理；无 SDK 构建和自检、SDK 构建、`ON` 缺 SDK 失败均有记录。本轮未重跑构建。
 - 原生工具：`Move/StopMove`、10 Hz 重发、状态超时停止、停止失败锁存、CSV、离线自检。
 - VINS：固定提交、补丁、480×270 候选配置、独立构建说明。
@@ -90,7 +90,7 @@
 | 2026-11-09 | 工程独立化 | 基本完成，待轻量验收 | — | 构建/自检为记录，本轮未重跑 |
 | 2026-11-09 | 初始化 GitHub 仓库和 README | 完成 | `63f3294` | 32 个文件，未提交 build/logs |
 | 2026-11-09 | 建立状态文档 | 完成 | 待提交 | 本文档 |
-| 2026-11-09 | T1 机身状态接口与离线变换 | 完成（离线） | `feat/body-state-interface`，PR 待创建 | 自检通过；`T_base_cam` 未实测 |
+| 2026-11-09 | T1 机身状态接口与离线变换 | 完成（离线） | `feat/body-state-interface`，PR #1 | 自检通过；`T_base_cam` 未实测 |
 
 ## 更新规则
 
