@@ -1,0 +1,18 @@
+%YAML:1.0
+---
+# Unit-specific intrinsics for this D435i at 480x270 IR mode.
+# Not a universal D435i calibration; re-measure for another device.
+model_type: PINHOLE
+camera_name: d435i_infra1_480x270
+image_width: 480
+image_height: 270
+distortion_parameters:
+   k1: 0.0
+   k2: 0.0
+   p1: 0.0
+   p2: 0.0
+projection_parameters:
+   fx: 244.104263305664
+   fy: 244.104263305664
+   cx: 240.514297485352
+   cy: 132.638809204102

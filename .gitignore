@@ -1,0 +1,17 @@
+# Local builds, recordings and generated outputs
+/build*/
+/install*/
+/log/
+/logs/
+/data/
+/third_party/
+*.db3
+*.db3-shm
+*.db3-wal
+*.mcap
+*.bag
+*.mp4
+*.avi
+__pycache__/
+*.pyc
+.cache/

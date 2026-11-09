@@ -1,0 +1,121 @@
+diff --git a/vins/src/utility/visualization.cpp b/vins/src/utility/visualization.cpp
+index 8146f19..59c1535 100755
+--- a/vins/src/utility/visualization.cpp
++++ b/vins/src/utility/visualization.cpp
+@@ -8,6 +8,9 @@
+  *******************************************************/
+ 
+ #include "visualization.h"
++#include <cstdlib>
++#include <iomanip>
++#include <iostream>
+ 
+ // using namespace ros;
+ using namespace Eigen;
+@@ -50,6 +53,22 @@ void registerPub(rclcpp::Node::SharedPtr n)
+     cameraposevisual.setLineWidth(0.01);
+ }
+ 
++void clearPub()
++{
++    pub_latest_odometry.reset();
++    pub_path.reset();
++    pub_odometry.reset();
++    pub_point_cloud.reset();
++    pub_margin_cloud.reset();
++    pub_key_poses.reset();
++    pub_camera_pose.reset();
++    pub_camera_pose_visual.reset();
++    pub_keyframe_pose.reset();
++    pub_keyframe_point.reset();
++    pub_extrinsic.reset();
++    pub_image_track.reset();
++}
++
+ void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, const Eigen::Vector3d &V, double t)
+ {
+     nav_msgs::msg::Odometry odometry;
+@@ -60,6 +79,7 @@ void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, co
+     odometry.header.stamp.nanosec = nsec_ts;
+ 
+     odometry.header.frame_id = WORLD_FRAME_ID;
++    odometry.child_frame_id = BODY_FRAME_ID;
+     odometry.pose.pose.position.x = P.x();
+     odometry.pose.pose.position.y = P.y();
+     odometry.pose.pose.position.z = P.z();
+@@ -67,9 +87,10 @@ void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, co
+     odometry.pose.pose.orientation.y = Q.y();
+     odometry.pose.pose.orientation.z = Q.z();
+     odometry.pose.pose.orientation.w = Q.w();
+-    odometry.twist.twist.linear.x = V.x();
+-    odometry.twist.twist.linear.y = V.y();
+-    odometry.twist.twist.linear.z = V.z();
++    const Eigen::Vector3d V_body = Q.conjugate() * V;
++    odometry.twist.twist.linear.x = V_body.x();
++    odometry.twist.twist.linear.y = V_body.y();
++    odometry.twist.twist.linear.z = V_body.z();
+     pub_latest_odometry->publish(odometry);
+ }
+ 
+@@ -140,6 +161,7 @@ void pubOdometry(const Estimator &estimator, const std_msgs::msg::Header &header
+         odometry.header = header;
+         odometry.header.frame_id = WORLD_FRAME_ID;
+         odometry.child_frame_id = BODY_FRAME_ID;
++        const Eigen::Vector3d V_body = estimator.Rs[WINDOW_SIZE].transpose() * estimator.Vs[WINDOW_SIZE];
+         Quaterniond tmp_Q;
+         tmp_Q = Quaterniond(estimator.Rs[WINDOW_SIZE]);
+         odometry.pose.pose.position.x = estimator.Ps[WINDOW_SIZE].x();
+@@ -149,9 +171,9 @@ void pubOdometry(const Estimator &estimator, const std_msgs::msg::Header &header
+         odometry.pose.pose.orientation.y = tmp_Q.y();
+         odometry.pose.pose.orientation.z = tmp_Q.z();
+         odometry.pose.pose.orientation.w = tmp_Q.w();
+-        odometry.twist.twist.linear.x = estimator.Vs[WINDOW_SIZE].x();
+-        odometry.twist.twist.linear.y = estimator.Vs[WINDOW_SIZE].y();
+-        odometry.twist.twist.linear.z = estimator.Vs[WINDOW_SIZE].z();
++        odometry.twist.twist.linear.x = V_body.x();
++        odometry.twist.twist.linear.y = V_body.y();
++        odometry.twist.twist.linear.z = V_body.z();
+         pub_odometry->publish(odometry);
+ 
+         geometry_msgs::msg::PoseStamped pose_stamped;
+@@ -163,6 +185,24 @@ void pubOdometry(const Estimator &estimator, const std_msgs::msg::Header &header
+         path.poses.push_back(pose_stamped);
+         pub_path->publish(path);
+ 
++        if (std::getenv("VINS_DIAG_EXTRINSIC") != nullptr)
++        {
++            const Eigen::Matrix3d &R = estimator.ric[0];
++            const Eigen::Vector3d &t = estimator.tic[0];
++            const Eigen::Vector3d &p = estimator.Ps[WINDOW_SIZE];
++            const Eigen::Vector3d &v = estimator.Vs[WINDOW_SIZE];
++            std::cout << std::fixed << std::setprecision(9)
++                      << "VINS_DIAG_EXT " << (header.stamp.sec + header.stamp.nanosec * 1e-9)
++                      << " " << estimator.td
++                      << " " << t.x() << " " << t.y() << " " << t.z()
++                      << " " << R(0,0) << " " << R(0,1) << " " << R(0,2)
++                      << " " << R(1,0) << " " << R(1,1) << " " << R(1,2)
++                      << " " << R(2,0) << " " << R(2,1) << " " << R(2,2)
++                      << " " << p.x() << " " << p.y() << " " << p.z()
++                      << " " << v.x() << " " << v.y() << " " << v.z()
++                      << std::endl;
++        }
++
+         // write result to file
+         ofstream foutC(VINS_RESULT_PATH, ios::app);
+         foutC.setf(ios::fixed, ios::floatfield);
+@@ -198,7 +238,7 @@ void pubKeyPoses(const Estimator &estimator, const std_msgs::msg::Header &header
+     key_poses.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+     key_poses.action = visualization_msgs::msg::Marker::ADD;
+     key_poses.pose.orientation.w = 1.0;
+-    key_poses.lifetime = rclcpp::Duration(0, 0);
++    key_poses.lifetime = rclcpp::Duration::from_seconds(0.0);
+ 
+     //static int key_poses_id = 0;
+     key_poses.id = 0; //key_poses_id++;
+@@ -538,4 +578,4 @@ void pubKeyframe(const Estimator &estimator)
+         }
+         pub_keyframe_point->publish(point_cloud);
+     }
+-}
+\ No newline at end of file
++}
