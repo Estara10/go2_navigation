@@ -24,6 +24,7 @@
 | `docs/INTERFACE.md` | 冻结的机身状态/速度命令接口与 `T_base_cam` 方向 |
 | `docs/MEASUREMENT_CHECKLIST.md` | `base_link` 原点和 `T_base_cam` 的测量清单 |
 | `scripts/go2_nav_core/` | 仅标准库的机身状态变换与离线自检 |
+| `scripts/go2_nav_plan/` | VINS→`base_link` 回放、Dubins + Pure Pursuit 离线原型 |
 | `scripts/go2_native_motion/` | Go2 原生 SDK2 终端工具、只读查询、离线自检 |
 | `scripts/go2_vins/` | VINS 固定版本、补丁、D435i 候选配置 |
 | `docs/history/` | 历史记录，仅作追溯 |
@@ -35,6 +36,7 @@
 - `goto x y` / `yaw deg` 是旧工具：目标在首次 `origin` 坐标系中，`goto` 可能使用侧移，不是 A1 的“按当前机头方向下达目标、前进加转向跟踪”。
 - VINS 可构建、可输出位姿和速度，但精度、尺度、停后稳定性、相机到机身外参都未验证。
 - `scripts/go2_nav_core/` 已有 `BodyState`/`VelocityCommand` 接口、相机 IMU→`base_link` 变换、杠杆臂补偿、nav 系转换、相对目标一次性转换和 valid 判据；`T_base_cam` 仍为未实测状态，测试只用合成值。
+- `scripts/go2_nav_plan/` 已有 VINS CSV→`BodyState` 回放、直线/Dubins 路径和 Pure Pursuit 离线模拟；模拟 A→B 位置误差约 2 cm，不是实机 5 cm。
 - 路径生成、Pure Pursuit 跟踪、VINS 与运动工具联动、5 cm 实机验收：未实现。
 
 ## 离线构建与自检

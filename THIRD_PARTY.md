@@ -7,6 +7,8 @@
 | 依赖 | 来源/固定版本 | 在本项目中的使用 | 许可证要求 |
 |---|---|---|---|
 | VINS-Fusion-ROS2 | <https://github.com/zinuok/VINS-Fusion-ROS2>，提交 `72023bc5d2abb14faa4c02a5c040d84f996b587a` | 外部 clone；本目录只保存配置和补丁 | 上游为 GPLv3（移植自 HKUST VINS-Fusion）。补丁是上游代码的修改，分发时需按 GPL 核对源码提供、声明保留等义务。**以 clone 后仓库的 `LICENSE` 为准。** |
+| PythonRobotics（Dubins 参考） | <https://github.com/AtsushiSakai/PythonRobotics>，MIT | Dubins 六词公式和采样方式的参考；本项目用 C++ 重写，未复制完整文件 | MIT；保留原作者版权声明 |
+| Nav2 Regulated Pure Pursuit（候选） | <https://github.com/ros-navigation/navigation2>，Apache-2.0 | 路径跟踪算法复用候选；当前未复制或链接其代码 | Apache-2.0；实际复用时保留声明 |
 | Unitree SDK2 | Unitree 官方 SDK2；本机外部安装 | 实机入口静态链接 `libunitree_sdk2.a`，运行时加载 `libddsc*.so` | 本目录不复制 SDK。许可证以 SDK 随附文件和 Unitree 发布条款为准；不把 SDK 二进制提交到普通 Git 历史。 |
 | RealSense ROS 2 / librealsense | 系统安装的 `ros-humble-realsense2-camera`、`ros-humble-librealsense2`（历史验证版本 4.58.4 / 2.58.4） | 相机驱动，本目录不链接、不复制 | 以系统包随附版权文件和上游仓库 `LICENSE` 为准；本项目不重新授权。 |
 | ROS 2 Humble、Ceres、OpenCV、Eigen、Boost、glog、gflags、SuiteSparse | 系统包 | VINS 构建/运行依赖 | 各自系统包/上游许可证；本项目不复制这些源码，也不代为声明。 |
