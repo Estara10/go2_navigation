@@ -17,9 +17,13 @@
 
 | 路径 | 内容 |
 |---|---|
+| `STATUS.md` | 当前状态与下一步任务 |
 | `A1_PROJECT_REQUIREMENTS.md` | 需求、坐标约定和验收定义 |
 | `AGENTS.md` | 项目边界与安全约定 |
 | `docs/COLLABORATION.md` | 工作流、接口和安全边界 |
+| `docs/INTERFACE.md` | 冻结的机身状态/速度命令接口与 `T_base_cam` 方向 |
+| `docs/MEASUREMENT_CHECKLIST.md` | `base_link` 原点和 `T_base_cam` 的测量清单 |
+| `scripts/go2_nav_core/` | 仅标准库的机身状态变换与离线自检 |
 | `scripts/go2_native_motion/` | Go2 原生 SDK2 终端工具、只读查询、离线自检 |
 | `scripts/go2_vins/` | VINS 固定版本、补丁、D435i 候选配置 |
 | `docs/history/` | 历史记录，仅作追溯 |
@@ -30,6 +34,7 @@
 - 原生 `SportClient.Move/StopMove` 终端工具：10 Hz 重发、状态超时停止、`StopMove` 失败锁存、CSV 记录。
 - `goto x y` / `yaw deg` 是旧工具：目标在首次 `origin` 坐标系中，`goto` 可能使用侧移，不是 A1 的“按当前机头方向下达目标、前进加转向跟踪”。
 - VINS 可构建、可输出位姿和速度，但精度、尺度、停后稳定性、相机到机身外参都未验证。
+- `scripts/go2_nav_core/` 已有 `BodyState`/`VelocityCommand` 接口、相机 IMU→`base_link` 变换、杠杆臂补偿、nav 系转换、相对目标一次性转换和 valid 判据；`T_base_cam` 仍为未实测状态，测试只用合成值。
 - 路径生成、Pure Pursuit 跟踪、VINS 与运动工具联动、5 cm 实机验收：未实现。
 
 ## 离线构建与自检
@@ -56,6 +61,15 @@ cmake --build build/native_motion-sdk --parallel 2
 ```
 
 `GO2_REAL_ROBOT=ON` 而 SDK 缺失时配置直接失败；`AUTO` 缺 SDK 时只构建核心和自检，并明确说明实机入口未构建。
+
+机身状态接口模块只依赖 C++17 标准库：
+
+```bash
+cmake -S scripts/go2_nav_core -B build/go2_nav_core \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build/go2_nav_core --parallel 2
+./build/go2_nav_core/go2_nav_core_selftest
+```
 
 ## VINS
 
