@@ -1,4 +1,5 @@
 #include "native_motion_core.hpp"
+#include "vins_udp_client.hpp"
 
 #include <unitree/idl/go2/SportModeState_.hpp>
 #include <unitree/robot/channel/channel_factory.hpp>
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdint>
 #include <ctime>
 #include <deque>
 #include <filesystem>
@@ -54,6 +56,8 @@ struct Options {
   std::string interface_name;
   go2_native_motion::Config config;
   bool help = false;
+  uint16_t vins_control_port = 46001;
+  uint16_t vins_state_port = 46002;
 };
 
 bool parseInt(const std::string& text, int& value) {
@@ -64,6 +68,20 @@ bool parseInt(const std::string& text, int& value) {
       return false;
     }
     value = static_cast<int>(parsed);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool parsePort(const std::string& text, uint16_t& value) {
+  try {
+    std::size_t position = 0;
+    const long parsed = std::stol(text, &position);
+    if (position != text.size() || parsed < 1 || parsed > 65535) {
+      return false;
+    }
+    value = static_cast<uint16_t>(parsed);
     return true;
   } catch (...) {
     return false;
@@ -106,6 +124,11 @@ void printUsage(const char* program) {
       << "允许 [0.05, 0.50] m/s，approach 不得大于 max；approach 是首轮防失速下限，"
          "不是已验证的硬件最低速度。\n"
       << "plan/goto 使用一次生成的路径和 Pure Pursuit，只发送 vx/vyaw，vy=0。\n"
+      << "--control-source native|vins（默认 native）；vins 时 plan/goto/yaw "
+         "使用 UDP VINS 桥状态，\n"
+      << "straight/pulse 仍要求 --control-source native。\n"
+      << "--vins-control-port 46001 --vins-state-port 46002"
+         " --vins-timeout-s 0.5 --vins-origin-timeout-s 2.0\n"
       << "默认 CSV: logs/go2_native_motion/<UTC时间戳>/native_motion.csv\n"
       << "--interface lo 被拒绝；离线自检请运行 go2_native_motion_selftest。\n";
 }
@@ -163,6 +186,47 @@ int parseArgs(int argc, char** argv, Options& options, std::string& error) {
         error = "--goto-approach-speed 必须是有限数值";
         return 2;
       }
+    } else if (key == "--control-source") {
+      std::string value;
+      if (!takeValue(value)) return 2;
+      if (value == "native") {
+        options.config.control_source =
+            go2_native_motion::ControlSource::Native;
+      } else if (value == "vins") {
+        options.config.control_source =
+            go2_native_motion::ControlSource::Vins;
+      } else {
+        error = "--control-source 必须是 native 或 vins";
+        return 2;
+      }
+    } else if (key == "--vins-control-port") {
+      std::string value;
+      if (!takeValue(value)) return 2;
+      if (!parsePort(value, options.vins_control_port)) {
+        error = "--vins-control-port 必须是 1..65535";
+        return 2;
+      }
+    } else if (key == "--vins-state-port") {
+      std::string value;
+      if (!takeValue(value)) return 2;
+      if (!parsePort(value, options.vins_state_port)) {
+        error = "--vins-state-port 必须是 1..65535";
+        return 2;
+      }
+    } else if (key == "--vins-timeout-s") {
+      std::string value;
+      if (!takeValue(value)) return 2;
+      if (!parseDouble(value, options.config.vins_timeout_s)) {
+        error = "--vins-timeout-s 必须是有限数值";
+        return 2;
+      }
+    } else if (key == "--vins-origin-timeout-s") {
+      std::string value;
+      if (!takeValue(value)) return 2;
+      if (!parseDouble(value, options.config.vins_origin_timeout_s)) {
+        error = "--vins-origin-timeout-s 必须是有限数值";
+        return 2;
+      }
     } else if (key == "--csv") {
       if (!takeValue(options.config.csv_path)) return 2;
     } else {
@@ -182,6 +246,21 @@ int parseArgs(int argc, char** argv, Options& options, std::string& error) {
   if (options.interface_name == "lo") {
     error = "--interface lo 被拒绝：本工具面向实机原生运动服务，不接受 loopback；"
             "离线路径请运行 go2_native_motion_selftest";
+    return 2;
+  }
+  if (options.config.vins_timeout_s <= 0.0 ||
+      options.config.vins_timeout_s > 5.0) {
+    error = "--vins-timeout-s 必须在 (0, 5.0] s";
+    return 2;
+  }
+  if (options.config.vins_origin_timeout_s <= 0.0 ||
+      options.config.vins_origin_timeout_s > 30.0) {
+    error = "--vins-origin-timeout-s 必须在 (0, 30.0] s";
+    return 2;
+  }
+  if (options.config.control_source == go2_native_motion::ControlSource::Vins &&
+      options.vins_control_port == options.vins_state_port) {
+    error = "--vins-control-port 与 --vins-state-port 不能相同";
     return 2;
   }
   return 0;
@@ -421,14 +500,37 @@ int main(int argc, char** argv) {
 
   installSignalHandlers();
 
+  std::unique_ptr<go2_native_motion::VinsUdpClient> vins_client;
+  if (options.config.control_source == go2_native_motion::ControlSource::Vins) {
+    vins_client = std::make_unique<go2_native_motion::VinsUdpClient>(
+        options.vins_control_port, options.vins_state_port);
+    std::string vins_error;
+    if (!vins_client->open(&vins_error)) {
+      std::cerr << "VINS UDP 初始化失败: " << vins_error
+                << "\n未初始化 DDS，未发送运动指令。\n";
+      return 2;
+    }
+    vins_client->requestPing();
+  }
+
   std::cout << "Go2 原生交互运动工具\n"
             << "只使用 SportClient Move/StopMove 和 rt/sportmodestate；"
                "不创建 LowCmd、不释放/切换控制权、"
                "不启动控制器/策略/相机/定位。\n"
+            << "控制来源: "
+            << go2_native_motion::controlSourceName(
+                   options.config.control_source)
+            << "\n"
             << "DDS domain=" << options.domain
             << ", interface=" << options.interface_name << "\n"
-            << "CSV: " << options.config.csv_path << "\n"
-            << "正常运动只发送 vx/vyaw，vy=0；plan/goto 使用一次生成的路径。\n"
+            << "CSV: " << options.config.csv_path << "\n";
+  if (options.config.control_source ==
+      go2_native_motion::ControlSource::Vins) {
+    std::cout << "VINS UDP: 发送到 127.0.0.1:" << options.vins_control_port
+              << ", 监听 127.0.0.1:" << options.vins_state_port
+              << ", 包超时 " << options.config.vins_timeout_s << " s\n";
+  }
+  std::cout << "正常运动只发送 vx/vyaw，vy=0；plan/goto 使用一次生成的路径。\n"
             << "普通命令按 Enter 执行；Ctrl+C 立即中断任务并尝试 StopMove。\n";
 
   try {
@@ -469,7 +571,8 @@ int main(int argc, char** argv) {
       };
 
       exit_code = go2_native_motion::runInteractiveSession(
-          options.config, backend, runtime, session_state, std::cout, csv);
+          options.config, backend, vins_client.get(), runtime, session_state,
+          std::cout, csv);
     }
     g_reader_stop.store(true);
     if (reader.joinable()) {

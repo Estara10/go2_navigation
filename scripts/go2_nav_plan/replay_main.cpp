@@ -1,4 +1,5 @@
 #include "vins_replay.hpp"
+#include "extrinsic_config.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -41,95 +42,6 @@ bool parseDouble(const char* text, double* value) {
   }
 }
 
-bool parseBool(const std::string& text, bool* value) {
-  if (text == "1" || text == "true" || text == "yes") {
-    *value = true;
-    return true;
-  }
-  if (text == "0" || text == "false" || text == "no") {
-    *value = false;
-    return true;
-  }
-  return false;
-}
-
-struct ExtrinsicConfig {
-  double tx = 0.0;
-  double ty = 0.0;
-  double tz = 0.0;
-  double yaw_deg = 0.0;
-  double pitch_deg = 0.0;
-  double roll_deg = 0.0;
-  bool camera_optical = false;
-  bool measured = false;
-};
-
-bool loadExtrinsicConfig(const std::string& path, ExtrinsicConfig* config,
-                         std::string* error) {
-  std::ifstream file(path);
-  if (!file.is_open()) {
-    if (error != nullptr) {
-      *error = "cannot open config: " + path;
-    }
-    return false;
-  }
-
-  std::string line;
-  std::size_t line_number = 0;
-  while (std::getline(file, line)) {
-    ++line_number;
-    const std::size_t hash = line.find('#');
-    if (hash != std::string::npos) {
-      line = line.substr(0, hash);
-    }
-    std::istringstream stream(line);
-    std::string key;
-    std::string value;
-    if (!(stream >> key)) {
-      continue;
-    }
-    if (!(stream >> value)) {
-      if (error != nullptr) {
-        *error = "missing value at line " + std::to_string(line_number);
-      }
-      return false;
-    }
-
-    bool ok = true;
-    if (key == "tx_m") {
-      ok = parseDouble(value.c_str(), &config->tx);
-    } else if (key == "ty_m") {
-      ok = parseDouble(value.c_str(), &config->ty);
-    } else if (key == "tz_m") {
-      ok = parseDouble(value.c_str(), &config->tz);
-    } else if (key == "yaw_deg") {
-      ok = parseDouble(value.c_str(), &config->yaw_deg);
-    } else if (key == "pitch_deg") {
-      ok = parseDouble(value.c_str(), &config->pitch_deg);
-    } else if (key == "roll_deg") {
-      ok = parseDouble(value.c_str(), &config->roll_deg);
-    } else if (key == "camera_optical") {
-      ok = parseBool(value, &config->camera_optical);
-    } else if (key == "measured") {
-      ok = parseBool(value, &config->measured);
-    } else {
-      if (error != nullptr) {
-        *error = "unknown key at line " + std::to_string(line_number) + ": " +
-                 key;
-      }
-      return false;
-    }
-    if (!ok) {
-      if (error != nullptr) {
-        *error = "invalid value at line " + std::to_string(line_number) +
-                 ": " + key + " " + value;
-      }
-      return false;
-    }
-  }
-  return true;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -143,10 +55,10 @@ int main(int argc, char** argv) {
     }
   }
 
-  ExtrinsicConfig config;
+  g::ExtrinsicConfig config;
   if (!config_path.empty()) {
     std::string error;
-    if (!loadExtrinsicConfig(config_path, &config, &error)) {
+    if (!g::loadExtrinsicConfig(config_path, &config, &error)) {
       std::cerr << "failed to load config: " << error << "\n";
       return 2;
     }
@@ -234,20 +146,16 @@ int main(int argc, char** argv) {
     std::cerr << "warning: " << skipped_rows << " rows skipped\n";
   }
 
-  g::Extrinsic extrinsic;
-  g::Mat3 mounting_rotation = g::Mat3::fromYawPitchRoll(
-      yaw_deg * g::kPi / 180.0, pitch_deg * g::kPi / 180.0,
-      roll_deg * g::kPi / 180.0);
-  if (camera_optical) {
-    g::Mat3 optical_to_base;
-    optical_to_base.m = {{0.0, 0.0, 1.0,
-                          -1.0, 0.0, 0.0,
-                          0.0, -1.0, 0.0}};
-    mounting_rotation = mounting_rotation * optical_to_base;
-  }
-  extrinsic.R_base_cam = mounting_rotation;
-  extrinsic.t_base_cam = g::Vec3{tx, ty, tz};
-  extrinsic.measured = measured;
+  g::ExtrinsicConfig final_config = config;
+  final_config.tx = tx;
+  final_config.ty = ty;
+  final_config.tz = tz;
+  final_config.yaw_deg = yaw_deg;
+  final_config.pitch_deg = pitch_deg;
+  final_config.roll_deg = roll_deg;
+  final_config.camera_optical = camera_optical;
+  final_config.measured = measured;
+  const g::Extrinsic extrinsic = g::makeExtrinsic(final_config);
 
   const g::Pose initial_camera{rows.front().position, rows.front().rotation};
   const g::Pose initial_base =

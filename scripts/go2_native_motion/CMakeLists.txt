@@ -24,6 +24,18 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../go2_nav_plan"
                  "${CMAKE_CURRENT_BINARY_DIR}/go2_nav_plan")
 target_link_libraries(go2_native_motion_core PUBLIC go2_nav_plan)
 
+# UDP VINS bridge client. It is standard-library + POSIX sockets only; it does
+# not include ROS or DDS. The loopback test is built without the SDK.
+find_package(Threads REQUIRED)
+add_library(go2_vins_udp_client STATIC vins_udp_client.cpp)
+target_link_libraries(go2_vins_udp_client PUBLIC go2_native_motion_core)
+target_compile_options(go2_vins_udp_client PRIVATE -Wall -Wextra)
+
+add_executable(vins_udp_loopback_test vins_udp_loopback_test.cpp)
+target_link_libraries(vins_udp_loopback_test
+  PRIVATE go2_vins_udp_client Threads::Threads)
+target_compile_options(vins_udp_loopback_test PRIVATE -Wall -Wextra)
+
 add_executable(go2_native_motion_selftest selftest.cpp)
 target_link_libraries(go2_native_motion_selftest PRIVATE go2_native_motion_core)
 target_compile_options(go2_native_motion_selftest PRIVATE -Wall -Wextra)
@@ -72,7 +84,7 @@ endif()
 if(_go2_build_real_robot)
   add_executable(go2_native_motion main.cpp)
   target_link_libraries(go2_native_motion
-    PRIVATE go2_native_motion_core unitree_sdk2)
+    PRIVATE go2_native_motion_core go2_vins_udp_client unitree_sdk2)
   target_compile_options(go2_native_motion PRIVATE -Wall -Wextra)
 
   add_executable(go2_native_readonly_query readonly_query.cpp)

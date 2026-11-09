@@ -159,10 +159,49 @@ target_nav.z = position_m.z
 
 任一条件失败时返回 `valid=false`，且**不更新**上一次已接受状态；消费者应停止任务。源端确认重置后，调用 `BodyStateEstimator::reset()` 再恢复。`valid` 只表示定位状态有效性，不表示 `T_base_cam` 已测量；控制层必须同时检查 `Extrinsic.measured`。
 
-## 8. 本任务不包含
+## 8. UDP 传输（v1）
 
-- 不接 VINS 实时数据、ROS 话题或 DDS；
-- 不做路径规划、Pure Pursuit、终点接近；
-- 不修改旧 `goto`/`yaw` 行为；
-- 不做实机测试、5 cm 验收或 VINS 参数调整；
-- 不定义传输层、时间同步策略或线程模型。
+桥接节点与原生工具运行在**同一台电脑**上，只使用 `127.0.0.1`。端口可配置，默认：
+
+| 方向 | 默认端口 | 内容 |
+|---|---:|---|
+| 原生 → 桥接 | 46001 | `SET_ORIGIN`、`PING` |
+| 桥接 → 原生 | 46002 | `ORIGIN_OK`、`ORIGIN_FAIL <reason>`、`STATE ...` |
+
+消息为单个 UDP datagram 的 ASCII 文本，行尾 `\n` 可省略。
+
+```text
+SET_ORIGIN
+PING
+ORIGIN_OK
+ORIGIN_FAIL <reason>
+STATE <seq> <stamp> <x> <y> <z> <yaw> <valid> <reason>
+```
+
+- `seq`：桥接状态序号，uint64。
+- `stamp`：桥接电脑 `CLOCK_MONOTONIC` 秒，不是 VINS header 时间。
+- `x/y/z`：`base_link` 原点在 nav 中的位置，m。
+- `yaw`：`base_link` +X 相对 nav +X，左转为正，rad。
+- `valid`：`1` 或 `0`。
+- `reason`：`OK`、`NO_NAV`、`NO_VINS`、`STALE`、`NONFINITE`、`JUMP`、`RESET`；`valid=1` 必须为 `OK`，`valid=0` 不能为 `OK`。
+
+时钟语义：
+
+- 桥接的 `STATE.stamp`、VINS 样本接收时间和原生工具的包龄检查都使用同一台电脑的 `CLOCK_MONOTONIC`。
+- VINS `header.stamp` 来自相机/Orin 时钟，单独记录/日志，不与 PC 单调时钟直接比较。
+- 桥接用接收时间判断 `STALE`；header 回退判为 `RESET` 并使 nav 失效。
+- 原生工具自身再检查 STATE 包龄；超过 `vins_timeout_s` 即停止。两侧不得跨电脑混用时钟。
+
+控制来源：
+
+- 原生工具 `--control-source native`（默认）使用 `SportModeState`，保持旧行为。
+- `--control-source vins` 时，`plan`/`goto`/`yaw` 使用 VINS `BodyState`；`straight`/`pulse` 只允许 native 模式。
+- VINS `valid=0`、包超时或桥接失效时立即停止，不静默回退到原生位置继续控制。
+- 桥接只发状态和 ORIGIN 响应，不发运动命令。
+
+## 9. 本任务边界
+
+- 不运行实机、不连接机器人/相机、不初始化 DDS；
+- 不修改 VINS 配置、算法、参数、标定、分辨率或频率；
+- 不接 LowCmd，不切换模式，不释放原生服务；
+- 不做实机 5 cm 验收；临时外参 `measured=false` 时不得用于控制。

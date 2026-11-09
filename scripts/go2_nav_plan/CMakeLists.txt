@@ -14,6 +14,7 @@ add_library(go2_nav_plan STATIC
   path.cpp
   pure_pursuit.cpp
   vins_replay.cpp
+  extrinsic_config.cpp
 )
 target_include_directories(go2_nav_plan
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

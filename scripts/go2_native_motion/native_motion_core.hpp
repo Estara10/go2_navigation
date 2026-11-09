@@ -9,6 +9,7 @@
 
 #include "path.hpp"
 #include "pure_pursuit.hpp"
+#include "vins_wire.hpp"
 
 namespace go2_native_motion {
 
@@ -40,6 +41,11 @@ inline constexpr double kMaxYawRateRadps = 0.50;
 inline constexpr double kGotoTimeoutS = 30.0;
 inline constexpr double kYawTimeoutS = 15.0;
 
+enum class ControlSource {
+  Native,
+  Vins,
+};
+
 struct Config {
   double vx_mps = 0.10;
   double vy_mps = 0.0;
@@ -47,6 +53,9 @@ struct Config {
   double duration_s = 2.0;
   double goto_max_speed_mps = kDefaultGotoMaxSpeedMps;
   double goto_approach_speed_mps = kDefaultGotoApproachSpeedMps;
+  ControlSource control_source = ControlSource::Native;
+  double vins_timeout_s = 0.5;
+  double vins_origin_timeout_s = 2.0;
   std::string csv_path;
 };
 
@@ -131,6 +140,7 @@ enum class TaskEndReason {
   Stopped,
   Interrupted,
   StateStale,
+  VinsInvalid,
   MoveApiError,
   Quit,
 };
@@ -143,6 +153,16 @@ class Backend {
   virtual int32_t move(float vx, float vy, float vyaw) = 0;
   virtual int32_t stopMove() = 0;
   virtual std::string lastError() = 0;
+};
+
+// VINS bridge client. The real implementation uses UDP; selftests use a fake.
+// The native tool never initializes ROS/DDS for this interface.
+class VinsClient {
+ public:
+  virtual ~VinsClient() = default;
+  virtual go2_nav::VinsWireState snapshot() = 0;
+  virtual bool requestOrigin(std::string* error, double timeout_s) = 0;
+  virtual void requestPing() = 0;
 };
 
 struct Runtime {
@@ -163,6 +183,7 @@ Command parseCommand(const std::string& line);
 const char* commandName(CommandType type);
 const char* taskName(TaskType type);
 const char* taskEndReasonName(TaskEndReason reason);
+const char* controlSourceName(ControlSource source);
 
 double wrapPi(double angle);
 LocalPose toLocalPose(const StateSnapshot& state, const Origin& origin);
@@ -171,8 +192,9 @@ void localToNative(const Origin& origin, double local_x, double local_y,
 
 void writeCsvHeader(std::ostream& csv);
 int runInteractiveSession(const Config& config, Backend& backend,
-                          const Runtime& runtime, SessionState& session_state,
-                          std::ostream& log, std::ostream& csv);
+                          VinsClient* vins_client, const Runtime& runtime,
+                          SessionState& session_state, std::ostream& log,
+                          std::ostream& csv);
 
 }  // namespace go2_native_motion
 

@@ -25,6 +25,7 @@
 | `docs/MEASUREMENT_CHECKLIST.md` | `base_link` 原点和 `T_base_cam` 的测量清单 |
 | `scripts/go2_nav_core/` | 仅标准库的机身状态变换与离线自检 |
 | `scripts/go2_nav_plan/` | VINS→`base_link` 回放、Dubins + Pure Pursuit 离线原型 |
+| `scripts/go2_vins_bridge/` | ROS 2 VINS→`base_link`→UDP 桥（只发状态） |
 | `scripts/go2_native_motion/` | Go2 原生 SDK2 终端工具、只读查询、离线自检 |
 | `scripts/go2_vins/` | VINS 固定版本、补丁、D435i 候选配置 |
 | `docs/history/` | 历史记录，仅作追溯 |
@@ -34,11 +35,12 @@
 
 - 原生 `SportClient.Move/StopMove` 终端工具：10 Hz 重发、状态超时停止、`StopMove` 失败锁存、CSV 记录。
 - 原生工具已加入 `pulse vx duration`（0.1–0.5 s 短脉冲，测步长/停车距离）和 `plan forward left`；`goto` 保留初始原点固定点语义，但改为一次生成的路径 + Pure Pursuit，所有正常运动 `vy=0`，不再侧移。
-- 当前原生工具使用 `SportModeState` 本地位姿做**机制验证**，不是 D435i/VINS 或 5 cm 验收。
+- `--control-source vins` 已离线接入：`scripts/go2_vins_bridge/` 把 VINS 位姿经 `T_base_cam` 转成 `base_link`，通过 UDP 发给原生工具；valid=0/包超时立即停止，不回退原生位置。
+- 当前原生工具默认仍用 `SportModeState` 本地位姿做**机制验证**；VINS 桥/UDP 未在真实 VINS 或实机上运行，不是 5 cm 验收。
 - VINS 可构建、可输出位姿和速度，但精度、尺度、停后稳定性、相机到机身外参都未验证。
 - `scripts/go2_nav_core/` 已有 `BodyState`/`VelocityCommand` 接口、相机 IMU→`base_link` 变换、杠杆臂补偿、nav 系转换、相对目标一次性转换和 valid 判据；`T_base_cam` 仍为未实测状态，测试只用合成值。
 - `scripts/go2_nav_plan/` 已有 VINS CSV→`BodyState` 回放、直线/Dubins 路径和 Pure Pursuit 离线模拟；模拟 A→B 位置误差约 2 cm，不是实机 5 cm。
-- VINS 与运动工具实时联动、实机 A→B、5 cm 验收：未实现。
+- VINS 与运动工具的实时联动已离线实现（ROS 桥 + UDP），但未运行真实 VINS/ROS 节点；实机 A→B、5 cm 验收未实现。
 
 ## 离线构建与自检
 
@@ -73,6 +75,18 @@ cmake -S scripts/go2_nav_core -B build/go2_nav_core \
 cmake --build build/go2_nav_core --parallel 2
 ./build/go2_nav_core/go2_nav_core_selftest
 ```
+
+VINS 桥接节点单独构建，需要 ROS 2 Humble；原生工具构建不链接 rclcpp：
+
+```bash
+source /opt/ros/humble/setup.bash
+cmake -S scripts/go2_vins_bridge -B build/go2_vins_bridge \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build/go2_vins_bridge --parallel 2
+./build/go2_vins_bridge/go2_vins_bridge_selftest
+```
+
+无 ROS 时可用 `-DCMAKE_DISABLE_FIND_PACKAGE_rclcpp=ON -DCMAKE_DISABLE_FIND_PACKAGE_nav_msgs=ON` 只构建桥接核心和自检。详见 [桥接说明](scripts/go2_vins_bridge/README.md)。
 
 ## VINS
 

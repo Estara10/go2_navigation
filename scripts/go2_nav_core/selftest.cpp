@@ -1,4 +1,5 @@
 #include "body_state.hpp"
+#include "vins_wire.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -374,6 +375,84 @@ void testValidity() {
   std::cout << (failures == before ? "PASS" : "FAIL") << " validity\n";
 }
 
+void testVinsWire() {
+  const int before = failures;
+
+  bool set_origin = false;
+  bool ping = false;
+  std::string error;
+  check(g::decodeNativeCommand(g::encodeSetOriginCommand(), &set_origin, &ping,
+                               &error) &&
+            set_origin && !ping,
+        "wire decode SET_ORIGIN");
+  check(g::decodeNativeCommand(g::encodePingCommand(), &set_origin, &ping,
+                               &error) &&
+            !set_origin && ping,
+        "wire decode PING");
+  check(!g::decodeNativeCommand("UNKNOWN", &set_origin, &ping, &error),
+        "wire reject unknown native command");
+
+  g::VinsBridgeMessage message;
+  check(g::decodeBridgeMessage(g::encodeOriginOk(), &message, &error) &&
+            message.type == g::VinsBridgeMessageType::OriginOk,
+        "wire decode ORIGIN_OK");
+  check(g::decodeBridgeMessage(g::encodeOriginFail(g::VinsReason::NoVins),
+                               &message, &error) &&
+            message.type == g::VinsBridgeMessageType::OriginFail &&
+            message.reason == g::VinsReason::NoVins,
+        "wire decode ORIGIN_FAIL");
+
+  g::VinsWireState state;
+  state.seq = 42;
+  state.stamp_s = 123.456789123;
+  state.x = 1.25;
+  state.y = -2.5;
+  state.z = 0.3;
+  state.yaw = 0.75;
+  state.valid = true;
+  state.reason = g::VinsReason::Ok;
+  check(g::decodeBridgeMessage(g::encodeState(state), &message, &error) &&
+            message.type == g::VinsBridgeMessageType::State &&
+            message.state.seq == 42 && message.state.valid &&
+            message.state.reason == g::VinsReason::Ok,
+        "wire decode valid STATE");
+  checkNear(message.state.stamp_s, state.stamp_s, "wire STATE stamp", 1e-9);
+  checkNear(message.state.x, state.x, "wire STATE x");
+  checkNear(message.state.yaw, state.yaw, "wire STATE yaw");
+
+  state.valid = false;
+  state.reason = g::VinsReason::Stale;
+  check(g::decodeBridgeMessage(g::encodeState(state), &message, &error) &&
+            !message.state.valid &&
+            message.state.reason == g::VinsReason::Stale,
+        "wire decode invalid STATE");
+
+  check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 8", &message, &error),
+        "wire reject missing STATE field");
+  check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 2 OK", &message, &error),
+        "wire reject invalid valid flag");
+  check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 1 STALE", &message,
+                                &error),
+        "wire reject valid with non-OK reason");
+  check(!g::decodeBridgeMessage("STATE 1 2 3 4 5 6 7 0 OK", &message, &error),
+        "wire reject invalid with OK reason");
+  check(!g::decodeBridgeMessage("STATE -1 2 3 4 5 6 7 0 STALE", &message,
+                                &error),
+        "wire reject negative sequence");
+
+  for (const g::VinsReason reason :
+       {g::VinsReason::Ok, g::VinsReason::NoNav, g::VinsReason::NoVins,
+        g::VinsReason::Stale, g::VinsReason::NonFinite, g::VinsReason::Jump,
+        g::VinsReason::Reset}) {
+    g::VinsReason parsed = g::VinsReason::Unknown;
+    check(g::parseVinsReason(g::vinsReasonName(reason), &parsed) &&
+              parsed == reason,
+          std::string("wire reason roundtrip ") + g::vinsReasonName(reason));
+  }
+
+  std::cout << (failures == before ? "PASS" : "FAIL") << " vins_wire\n";
+}
+
 void testVelocityCommandDefaults() {
   const int before = failures;
   const g::VelocityCommand command;
@@ -398,6 +477,7 @@ int main() {
   testNavFrameNonZeroInitialHeading();
   testRelativeTargetOnce();
   testValidity();
+  testVinsWire();
   testVelocityCommandDefaults();
 
   if (failures != 0) {

@@ -47,6 +47,7 @@ cmake --build "$PROJECT_ROOT/build/native_motion-sdk" --parallel 2
 - 固定上游提交、补丁顺序、已验证环境和独立构建目录见 `scripts/go2_vins/README.md`。
 - 不自动下载/安装/升级系统包；不改变现有估计参数、算法或生产候选配置语义。
 - 相机—IMU 外参与相机—Go2 机身安装外参是两组不同变换；本机 D435i 标定不是通用标定。
+- VINS 桥接节点需要 ROS 2，单独构建；不得把 rclcpp 链接进原生 SDK 工具。
 - 历史记录保留在 `docs/history/`，其中的原路径和命令只作追溯，不能直接照抄执行。
 
 ## 数据与收尾

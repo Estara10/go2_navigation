@@ -113,13 +113,49 @@ bool cmdRowsHaveTarget(const std::string& csv, double x, double y) {
   return cmd_rows > 0 && all_match;
 }
 
+bool cmdRowsControlSource(const std::string& csv, const std::string& source) {
+  std::istringstream stream(csv);
+  std::string line;
+  int cmd_rows = 0;
+  bool all_match = true;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 30 || fields[2] != "cmd") {
+      continue;
+    }
+    ++cmd_rows;
+    if (fields[30] != source) {
+      all_match = false;
+    }
+  }
+  return cmd_rows > 0 && all_match;
+}
+
+bool cmdRowsVinsValid(const std::string& csv, const std::string& valid) {
+  std::istringstream stream(csv);
+  std::string line;
+  int cmd_rows = 0;
+  bool all_match = true;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 31 || fields[2] != "cmd") {
+      continue;
+    }
+    ++cmd_rows;
+    if (fields[31] != valid) {
+      all_match = false;
+    }
+  }
+  return cmd_rows > 0 && all_match;
+}
+
 bool taskStartPulseFields(const std::string& csv, double* vx, double* duration) {
   std::istringstream stream(csv);
   std::string line;
   while (std::getline(stream, line)) {
     const std::vector<std::string> fields = splitCsvLine(line);
-    if (fields.size() <= 31 || fields[3] != "pulse" ||
-        fields[2] != "event" || fields[31] != "task_start") {
+    if (fields.size() <= 37 || fields[3] != "pulse" ||
+        fields[2] != "event" || fields[37] != "task_start") {
       continue;
     }
     try {
@@ -199,6 +235,61 @@ struct FakeClock {
   double now = 0.0;
 };
 
+class FakeVinsClient final : public g::VinsClient {
+ public:
+  explicit FakeVinsClient(FakeClock& clock) : clock_(clock) {}
+
+  go2_nav::VinsWireState snapshot() override {
+    if (auto_stamp && state.received) {
+      state.stamp_s = clock_.now;
+    }
+    return state;
+  }
+
+  bool requestOrigin(std::string* error, double /*timeout_s*/) override {
+    ++origin_requests;
+    if (!origin_ok) {
+      if (error != nullptr) {
+        *error = origin_error;
+      }
+      return false;
+    }
+    state.received = true;
+    state.valid = true;
+    state.reason = go2_nav::VinsReason::Ok;
+    ++state.seq;
+    state.stamp_s = clock_.now;
+    state.x = 0.0;
+    state.y = 0.0;
+    state.z = 0.0;
+    state.yaw = 0.0;
+    return true;
+  }
+
+  void requestPing() override { ++ping_requests; }
+
+  void setState(double x, double y, double yaw, bool valid,
+                go2_nav::VinsReason reason) {
+    state.received = true;
+    state.valid = valid;
+    state.reason = reason;
+    ++state.seq;
+    state.stamp_s = clock_.now;
+    state.x = x;
+    state.y = y;
+    state.z = 0.0;
+    state.yaw = yaw;
+  }
+
+  FakeClock& clock_;
+  go2_nav::VinsWireState state;
+  bool origin_ok = true;
+  bool auto_stamp = true;
+  std::string origin_error = "NO_VINS";
+  int origin_requests = 0;
+  int ping_requests = 0;
+};
+
 class ScriptedCommands {
  public:
   explicit ScriptedCommands(FakeClock& clock) : clock_(clock) {}
@@ -239,6 +330,7 @@ class ScriptedCommands {
 struct Case {
   FakeBackend backend;
   FakeClock clock;
+  FakeVinsClient vins_client{clock};
   ScriptedCommands script{clock};
   g::Config config;
   g::SessionState session_state;
@@ -272,8 +364,8 @@ int run(Case& test_case) {
     return test_case.script.poll(command);
   };
   test_case.exit_code = g::runInteractiveSession(
-      test_case.config, test_case.backend, runtime, test_case.session_state,
-      test_case.log, test_case.csv);
+      test_case.config, test_case.backend, &test_case.vins_client, runtime,
+      test_case.session_state, test_case.log, test_case.csv);
   return test_case.exit_code;
 }
 
@@ -746,6 +838,148 @@ void testPlanTimeoutAndStateStale() {
             << " plan_timeout_state_stale\n";
 }
 
+void testVinsControlSource() {
+  const int before = failures;
+
+  // plan uses VINS local state, not the (deliberately different) native state.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.backend.state.position = {5.0, 5.0, 0.30};
+    test_case.backend.state.yaw_rad = 1.0;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 0.5 0");
+    test_case.script.add(0.6, "stop");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.vins_client.origin_requests == 1,
+          "vins origin requested once");
+    check(test_case.backend.move_calls > 0, "vins plan sends Moves");
+    check(cmdRowsHaveTarget(csv, 0.5, 0.0),
+          "vins plan target uses VINS local frame");
+    check(cmdRowsControlSource(csv, "vins"),
+          "vins plan CSV control source");
+    check(cmdRowsVinsValid(csv, "1"), "vins plan CSV valid field");
+    checkNear(test_case.backend.last_vy, 0.0, "vins plan last vy zero");
+    checkNoLateral(test_case, "vins_plan");
+    check(csv.find("VINS_INVALID") == std::string::npos,
+          "vins plan not invalid");
+  }
+
+  // Origin failure must block motion.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.vins_client.origin_ok = false;
+    test_case.vins_client.origin_error = "NO_VINS";
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 0.5 0");
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.vins_client.origin_requests == 1,
+          "vins origin failure requested once");
+    check(test_case.backend.move_calls == 0,
+          "vins origin failure no Move");
+    check(csv.find("vins_origin_failed:NO_VINS") != std::string::npos,
+          "vins origin failure marker");
+  }
+
+  // valid=0 stops an active plan immediately and does not fall back.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 1 0");
+    test_case.script.add(0.2, "status", [&test_case] {
+      test_case.vins_client.setState(0.0, 0.0, 0.0, false,
+                                     go2_nav::VinsReason::Stale);
+    });
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.backend.move_calls == 1,
+          "vins invalid stops after one Move");
+    check(csv.find("VINS_INVALID") != std::string::npos,
+          "vins invalid task end");
+    check(csv.find("STALE") != std::string::npos,
+          "vins invalid reason recorded");
+    check(noCmdAfter(csv, "stop_request"), "vins invalid no cmd after stop");
+    check(test_case.backend.stop_calls == 2,
+          "vins invalid stop + quit");
+  }
+
+  // A stale timestamp (packet timeout) stops even if the last bridge state
+  // still said valid.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.config.vins_timeout_s = 0.3;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 1 0");
+    test_case.script.add(0.2, "status", [&test_case] {
+      test_case.vins_client.auto_stamp = false;
+      test_case.vins_client.state.received = true;
+      test_case.vins_client.state.valid = true;
+      test_case.vins_client.state.reason = go2_nav::VinsReason::Ok;
+      test_case.vins_client.state.stamp_s = test_case.clock.now - 1.0;
+    });
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.backend.move_calls == 1,
+          "vins timeout stops after one Move");
+    check(csv.find("VINS_INVALID") != std::string::npos,
+          "vins timeout task end");
+    check(csv.find("STALE") != std::string::npos,
+          "vins timeout reason recorded");
+    check(noCmdAfter(csv, "stop_request"), "vins timeout no cmd after stop");
+  }
+
+  // straight and pulse are native-source commands; vins mode rejects them.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "straight");
+    test_case.script.add(0.2, "pulse 0.20 0.1");
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 0,
+          "vins rejects straight/pulse without Move");
+    check(countOccurrences(test_case.csv.str(),
+                           "vins_source_requires_native") == 2,
+          "vins rejects straight/pulse markers");
+  }
+
+  // yaw uses VINS heading in vins mode.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "yaw 90");
+    test_case.script.add(0.6, "stop");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls > 0, "vins yaw sends Moves");
+    check(test_case.backend.max_abs_vyaw > 0.0, "vins yaw turns");
+    checkNear(test_case.backend.last_vy, 0.0, "vins yaw vy zero");
+    check(cmdRowsControlSource(test_case.csv.str(), "vins"),
+          "vins yaw CSV control source");
+    checkNoLateral(test_case, "vins_yaw");
+  }
+
+  std::cout << (failures == before ? "PASS" : "FAIL")
+            << " vins_control_source\n";
+}
+
 void testYawWrap() {
   const int before = failures;
   Case test_case;
@@ -1096,6 +1330,7 @@ int main() {
   testPulseBoundsAndTiming();
   testPlanAndGotoNavigation();
   testPlanTimeoutAndStateStale();
+  testVinsControlSource();
   testYawWrap();
   testArrivalStops();
   testTimeoutStops();

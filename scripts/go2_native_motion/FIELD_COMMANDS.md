@@ -4,7 +4,7 @@
 
 > **容差更新：**用户要求将goto位置容差改为5厘米（0.05 m）。重新启动本次构建的程序，终端应显示 `plan/goto 位置容差=0.050 m`。速度仍沿用0.30 m/s候选，历史10厘米容差试验不改写。移动到新场地后，在静止状态重新origin；停稳后先读取status和测量，再趴伏或搬动。若越过目标后反向追赶或反复调整，立即stop，本次不放任持续纠偏。5厘米是原生估计判据，不是实际精度保证。
 
-> **2026-11-09 更新：**新增短脉冲 `pulse vx duration` 和相对目标 `plan forward left`；`goto` 保留初始坐标固定点语义，但改用一次生成的路径 + Pure Pursuit，**所有正常运动 `vy=0`，不再侧移**。下方历史直走和旧 goto 步骤保留作追溯；当前现场操作优先看“短脉冲”和“plan/goto 新控制律”两节。
+> **2026-11-09 更新：**新增短脉冲 `pulse vx duration` 和相对目标 `plan forward left`；`goto` 保留初始坐标固定点语义，但改用一次生成的路径 + Pure Pursuit，**所有正常运动 `vy=0`，不再侧移**。另新增 `--control-source vins`：plan/goto/yaw 可由 VINS 桥通过 UDP 提供 `base_link` 状态；详见 0A。下方历史直走和旧 goto 步骤保留作追溯；当前现场操作优先看“短脉冲”和“plan/goto 新控制律”两节。
 
 本文件供用户在电脑本地终端逐步操作。首次只做 `straight` 短时直走与停止，不运行论文控制器或低层控制。没有外接传感器要求。
 
@@ -25,6 +25,62 @@ export ROS_DOMAIN_ID=...                      # 相机/VINS 使用的独立 ROS 
 ```
 
 2026-11-04 的历史配置是 `enp7s0`、电脑 `192.168.123.99/24`、Orin `192.168.123.18`、DDS domain `0`；这些只说明当时现场，不表示当前仍适用。
+
+## 0A. VINS 控制来源（A1 机制验证，默认不启用）
+
+本任务只离线实现；以下步骤供现场安排后使用，执行器未运行。
+
+启动顺序：
+
+1. 按 `scripts/go2_vins/` 起 VINS，确认 `/vins/odometry` 有数据；这不在本工具内。
+2. 另开终端启动桥接（需要 ROS 2 Humble；不要沿用 Anaconda 的 `LD_LIBRARY_PATH`，先 `conda deactivate` 或使用干净 shell）：
+
+```bash
+source /opt/ros/humble/setup.bash
+"$PROJECT_ROOT/build/go2_vins_bridge/go2_vins_bridge" \
+  --config "$PROJECT_ROOT/scripts/go2_nav_plan/config/d435i_provisional.conf" \
+  --vins-topic /vins/odometry \
+  --control-port 46001 --state-port 46002
+```
+
+3. 启动原生工具（`--control-source vins`）：
+
+```bash
+vins_log_dir="$PROJECT_ROOT/logs/go2_native_motion/$(date -u +%Y%m%d_%H%M%S)_vins"
+env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
+  "$PROJECT_ROOT/build/native_motion-sdk/go2_native_motion" \
+  --control-source vins \
+  --vins-control-port 46001 --vins-state-port 46002 \
+  --vins-timeout-s 0.5 \
+  --domain "$DDS_DOMAIN" --interface "$GO2_NIC" \
+  --csv "$vins_log_dir/native_motion.csv"
+```
+
+4. 等待原生状态就绪；确认桥接日志显示 `measured=0/1`。当前临时外参为 `measured=0`，**不得用于实机控制或 5 cm 验收**。
+5. 机器人静止且 VINS 状态有效后输入：
+
+```text
+命令> origin
+```
+
+原生工具向桥接发送 `SET_ORIGIN`，等待 `ORIGIN_OK`。只有成功才记录起点；`ORIGIN_FAIL <reason>` 时不进入运动，先检查 VINS/桥接。
+
+6. 用 `status` 查看 `control_source=vins`、`vins_valid`、`vins_reason`、`vins seq/stamp/age`。然后按已审阅范围使用：
+
+```text
+命令> plan 0.5 0
+命令> goto 1 0
+命令> yaw 30
+```
+
+vins 模式下 `plan`/`goto`/`yaw` 使用 VINS `BodyState`；`straight`/`pulse` 只允许 `--control-source native`，会被拒绝。所有正常运动仍 `vy=0`。
+
+失效处理：
+
+- `vins_valid=0`（`NO_NAV`、`NO_VINS`、`STALE`、`NONFINITE`、`JUMP`、`RESET`）或 STATE 包龄超过 `--vins-timeout-s` 时，原生工具立即停止并记录 `VINS_INVALID`。
+- **不切回原生位置继续运动**。确认 VINS/桥接恢复后，通常需要 `quit` 重启并重新 `origin`。
+- 停止失败锁存仍有效：`StopMove` 失败后本会话拒绝运动命令，只允许 `status`、`stop`、`quit`。
+- 桥接只发状态，不发运动；原生工具仍是唯一运动发送入口。
 
 ## 1. 现场准备
 

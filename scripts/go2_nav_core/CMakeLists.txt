@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Standard-library-only offline module. It must not link ROS, DDS, or the
 # Unitree SDK.
-add_library(go2_nav_core STATIC body_state.cpp)
+add_library(go2_nav_core STATIC body_state.cpp vins_wire.cpp)
 target_include_directories(go2_nav_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(go2_nav_core PRIVATE -Wall -Wextra)

@@ -7,6 +7,7 @@
 #include <ctime>
 #include <exception>
 #include <iomanip>
+#include <limits>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -116,6 +117,14 @@ struct RowContext {
   int32_t api = 0;
   const char* event = nullptr;
   std::string detail;
+  bool vins_control = false;
+  const go2_nav::VinsWireState* vins = nullptr;
+  bool vins_valid = false;
+  std::string vins_reason;
+  bool has_local = false;
+  LocalPose local;
+  bool has_vins_age = false;
+  double vins_age_s = 0.0;
 };
 
 void writeRow(std::ostream& csv, double mono_s, const char* type,
@@ -136,7 +145,8 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     fields.push_back("");
   }
 
-  if (context.origin != nullptr && context.origin->set) {
+  if (!context.vins_control && context.origin != nullptr &&
+      context.origin->set) {
     fields.push_back(number(context.origin->native_x, 6));
     fields.push_back(number(context.origin->native_y, 6));
     fields.push_back(number(context.origin->native_yaw, 6));
@@ -152,9 +162,15 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     fields.push_back(number(context.task->target_local_x, 6));
     fields.push_back(number(context.task->target_local_y, 6));
     fields.push_back(number(context.task->target_local_yaw_deg, 6));
-    fields.push_back(number(context.task->target_native_x, 6));
-    fields.push_back(number(context.task->target_native_y, 6));
-    fields.push_back(number(context.task->target_native_yaw, 6));
+    if (context.vins_control) {
+      fields.push_back("");
+      fields.push_back("");
+      fields.push_back("");
+    } else {
+      fields.push_back(number(context.task->target_native_x, 6));
+      fields.push_back(number(context.task->target_native_y, 6));
+      fields.push_back(number(context.task->target_native_yaw, 6));
+    }
   } else if (context.task != nullptr &&
              context.task->type == TaskType::Yaw) {
     fields.push_back("");
@@ -162,7 +178,11 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     fields.push_back(number(context.task->target_local_yaw_deg, 6));
     fields.push_back("");
     fields.push_back("");
-    fields.push_back(number(context.task->target_native_yaw, 6));
+    if (context.vins_control) {
+      fields.push_back("");
+    } else {
+      fields.push_back(number(context.task->target_native_yaw, 6));
+    }
   } else {
     for (int i = 0; i < 6; ++i) {
       fields.push_back("");
@@ -177,8 +197,13 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     fields.push_back("");
   }
 
-  if (context.origin != nullptr && context.origin->set &&
-      context.state != nullptr && context.state->received) {
+  if (context.has_local) {
+    fields.push_back(number(context.local.x, 6));
+    fields.push_back(number(context.local.y, 6));
+    fields.push_back(number(context.local.heading * 180.0 / kPi, 6));
+  } else if (!context.vins_control && context.origin != nullptr &&
+             context.origin->set && context.state != nullptr &&
+             context.state->received) {
     const LocalPose local = toLocalPose(*context.state, *context.origin);
     fields.push_back(number(local.x, 6));
     fields.push_back(number(local.y, 6));
@@ -213,6 +238,21 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     }
   }
 
+  fields.push_back(context.vins_control ? "vins" : "native");
+  if (context.vins_control && context.vins != nullptr) {
+    fields.push_back(context.vins_valid ? "1" : "0");
+    fields.push_back(context.vins_reason);
+    fields.push_back(std::to_string(context.vins->seq));
+    fields.push_back(number(context.vins->stamp_s, 6));
+    fields.push_back(context.has_vins_age
+                         ? number(context.vins_age_s, 6)
+                         : std::string());
+  } else {
+    for (int i = 0; i < 5; ++i) {
+      fields.push_back("");
+    }
+  }
+
   fields.push_back(context.has_api ? std::to_string(context.api) : "");
   fields.push_back(context.event == nullptr ? "" : context.event);
   fields.push_back(csvField(context.detail));
@@ -232,6 +272,49 @@ std::string staleDetail(const StateSnapshot& state) {
       << ", finite=" << state.finite << ", age_s=" << number(state.age_s, 3)
       << ", limit_s=" << number(kMaxStateAgeS, 3) << ')';
   return out.str();
+}
+
+bool finiteVins(const go2_nav::VinsWireState& vins) {
+  return std::isfinite(vins.stamp_s) && std::isfinite(vins.x) &&
+         std::isfinite(vins.y) && std::isfinite(vins.z) &&
+         std::isfinite(vins.yaw);
+}
+
+double vinsAgeS(const go2_nav::VinsWireState& vins, double now_s) {
+  return vins.received ? now_s - vins.stamp_s
+                       : std::numeric_limits<double>::infinity();
+}
+
+StateSnapshot snapshotFromVins(const go2_nav::VinsWireState& vins,
+                               double now_s) {
+  StateSnapshot snapshot;
+  snapshot.received = vins.received;
+  snapshot.finite = vins.valid;
+  snapshot.seq = vins.seq;
+  snapshot.age_s = vinsAgeS(vins, now_s);
+  snapshot.position = {vins.x, vins.y, 0.0};
+  snapshot.velocity = {0.0, 0.0, 0.0};
+  snapshot.yaw_rad = vins.yaw;
+  return snapshot;
+}
+
+bool vinsUsable(const go2_nav::VinsWireState& vins, double now_s,
+                double timeout_s) {
+  if (!vins.received || !vins.valid || vins.reason != go2_nav::VinsReason::Ok ||
+      !finiteVins(vins)) {
+    return false;
+  }
+  const double age_s = vinsAgeS(vins, now_s);
+  return std::isfinite(age_s) && age_s >= -0.05 && age_s <= timeout_s;
+}
+
+const char* vinsReasonForDisplay(const go2_nav::VinsWireState& vins,
+                                 double now_s, double timeout_s) {
+  if (vins.received && vins.valid && finiteVins(vins) &&
+      vinsAgeS(vins, now_s) > timeout_s) {
+    return go2_nav::vinsReasonName(go2_nav::VinsReason::Stale);
+  }
+  return go2_nav::vinsReasonName(vins.reason);
 }
 
 }  // namespace
@@ -412,12 +495,24 @@ const char* taskEndReasonName(TaskEndReason reason) {
       return "INTERRUPTED";
     case TaskEndReason::StateStale:
       return "STATE_STALE";
+    case TaskEndReason::VinsInvalid:
+      return "VINS_INVALID";
     case TaskEndReason::MoveApiError:
       return "MOVE_API_ERROR";
     case TaskEndReason::Quit:
       return "QUIT";
   }
   return "UNKNOWN";
+}
+
+const char* controlSourceName(ControlSource source) {
+  switch (source) {
+    case ControlSource::Native:
+      return "native";
+    case ControlSource::Vins:
+      return "vins";
+  }
+  return "unknown";
 }
 
 double wrapPi(double angle) {
@@ -464,18 +559,52 @@ void writeCsvHeader(std::ostream& csv) {
          "cmd_vx_mps,cmd_vy_mps,cmd_vyaw_radps,"
          "native_pos_x,native_pos_y,native_pos_z,"
          "native_vel_x,native_vel_y,native_vel_z,native_yaw_raw,"
+         "control_source,vins_valid,vins_reason,vins_seq,vins_stamp,"
+         "vins_age_s,"
          "api_return,event,detail\n";
 }
 
 int runInteractiveSession(const Config& config, Backend& backend,
-                          const Runtime& runtime, SessionState& session_state,
-                          std::ostream& log, std::ostream& csv) {
+                          VinsClient* vins_client, const Runtime& runtime,
+                          SessionState& session_state, std::ostream& log,
+                          std::ostream& csv) {
   const double session_t0 = runtime.now_s();
   StateSnapshot state;
+  StateSnapshot control_state;
+  go2_nav::VinsWireState vins_state;
   Origin origin;
   Task task;
   double next_control = 0.0;
+  bool control_valid = false;
+  bool control_local_available = false;
+  LocalPose control_local;
+  std::string control_reason = "NO_VINS";
   session_state.stop_failed = false;
+
+  auto refreshControl = [&](double now_s) {
+    state = backend.snapshot();
+    if (config.control_source == ControlSource::Native) {
+      control_state = state;
+      control_valid = isFresh(state);
+      control_reason = control_valid ? "OK" : "STALE";
+      control_local_available = origin.set && state.received;
+      if (control_local_available) {
+        control_local = toLocalPose(state, origin);
+      }
+      return;
+    }
+
+    vins_state = vins_client != nullptr ? vins_client->snapshot()
+                                        : go2_nav::VinsWireState{};
+    control_state = snapshotFromVins(vins_state, now_s);
+    control_valid = vinsUsable(vins_state, now_s, config.vins_timeout_s);
+    control_reason =
+        control_valid
+            ? go2_nav::vinsReasonName(go2_nav::VinsReason::Ok)
+            : vinsReasonForDisplay(vins_state, now_s, config.vins_timeout_s);
+    control_local_available = vins_state.received;
+    control_local = LocalPose{vins_state.x, vins_state.y, vins_state.yaw};
+  };
 
   auto writeEvent = [&](const char* name, const std::string& detail,
                         const Task* task_override = nullptr,
@@ -488,6 +617,16 @@ int runInteractiveSession(const Config& config, Backend& backend,
     context.api = api;
     context.event = name;
     context.detail = detail;
+    context.vins_control = config.control_source == ControlSource::Vins;
+    context.vins = context.vins_control ? &vins_state : nullptr;
+    context.vins_valid = control_valid;
+    context.vins_reason = control_reason;
+    context.has_local = control_local_available;
+    context.local = control_local;
+    context.has_vins_age =
+        context.vins_control && vins_state.received;
+    context.vins_age_s =
+        context.has_vins_age ? runtime.now_s() - vins_state.stamp_s : 0.0;
     writeRow(csv, runtime.now_s() - session_t0, "event", context);
     csv.flush();
   };
@@ -530,6 +669,14 @@ int runInteractiveSession(const Config& config, Backend& backend,
   log << "原生航向(IMU rpy[2], 字段原样；单位待本机核实): " << state.yaw_rad
       << "\n";
   log << "位置/速度/航向均为估计反馈，坐标系和单位待本机核实，不是独立测量真值。\n";
+  log << "控制来源: " << controlSourceName(config.control_source);
+  if (config.control_source == ControlSource::Vins) {
+    log << "（plan/goto/yaw 使用 VINS BodyState；包超时 "
+        << config.vins_timeout_s << " s；原生 SportModeState 只作状态显示/停止）";
+  } else {
+    log << "（plan/goto/yaw 使用原生 SportModeState）";
+  }
+  log << "\n";
   writeEvent("state_ready", "");
 
   log << "本次 straight 参数: vx=" << config.vx_mps << " m/s, duration="
@@ -563,6 +710,9 @@ int runInteractiveSession(const Config& config, Backend& backend,
         << "普通命令按 Enter 执行；Ctrl+C 立即中断，不需要 Enter。\n"
         << "正常运动只使用 vx/vyaw，vy 固定为 0；不再侧移。\n"
         << "运动中可输入 status/stop/quit；新的运动命令需先 stop。\n";
+    if (config.control_source == ControlSource::Vins) {
+      log << "vins 模式: plan/goto/yaw 使用 VINS；straight/pulse 仅 native。\n";
+    }
   };
 
   log << "本地坐标: 起点=(0,0), 初始前方=+X, 左侧=+Y, 初始朝向=0°, "
@@ -572,18 +722,24 @@ int runInteractiveSession(const Config& config, Backend& backend,
   log << "命令> " << std::flush;
 
   auto printStatus = [&]() {
-    state = backend.snapshot();
+    refreshControl(runtime.now_s());
+    log << "control_source=" << controlSourceName(config.control_source)
+        << " control_valid=" << (control_valid ? "1" : "0")
+        << " reason=" << control_reason << "\n";
     log << "task=" << taskName(task.type);
     if (task.type == TaskType::Goto || task.type == TaskType::Plan) {
       log << " target_local=(" << task.target_local_x << ","
-          << task.target_local_y << ") target_native=("
-          << task.target_native_x << "," << task.target_native_y
-          << ") path_len=" << task.path.length()
+          << task.target_local_y << ")";
+      if (config.control_source == ControlSource::Native) {
+        log << " target_native=(" << task.target_native_x << ","
+            << task.target_native_y << ")";
+      }
+      log << " path_len=" << task.path.length()
           << " vmax=" << config.goto_max_speed_mps
           << " approach=" << config.goto_approach_speed_mps;
     } else if (task.type == TaskType::Yaw) {
       log << " target_local_yaw=" << task.target_local_yaw_deg
-          << " deg target_native_yaw_raw=" << task.target_native_yaw;
+          << " deg target_yaw_raw=" << task.target_native_yaw;
     } else if (task.type == TaskType::Straight) {
       log << " duration=" << task.straight_duration_s
           << " s vx=" << task.straight_vx_mps << " m/s";
@@ -594,17 +750,31 @@ int runInteractiveSession(const Config& config, Backend& backend,
     log << "\n";
 
     if (origin.set) {
-      log << "origin=set native=(" << origin.native_x << ","
-          << origin.native_y << ") yaw_raw=" << origin.native_yaw << "\n";
-      if (state.received) {
-        const LocalPose local = toLocalPose(state, origin);
-        log << "local pos=(" << local.x << "," << local.y << ") heading="
-            << (local.heading * 180.0 / kPi) << " deg\n";
+      if (config.control_source == ControlSource::Vins) {
+        log << "origin=vins_nav (native origin fields unused)\n";
       } else {
-        log << "local=state unavailable\n";
+        log << "origin=set native=(" << origin.native_x << ","
+            << origin.native_y << ") yaw_raw=" << origin.native_yaw << "\n";
+      }
+      if (control_local_available) {
+        log << "control local pos=(" << control_local.x << ","
+            << control_local.y << ") heading="
+            << (control_local.heading * 180.0 / kPi) << " deg\n";
+      } else {
+        log << "control local=unavailable\n";
       }
     } else {
       log << "origin=unset\n";
+    }
+
+    if (config.control_source == ControlSource::Vins) {
+      log << "vins seq=" << vins_state.seq
+          << " stamp=" << vins_state.stamp_s
+          << " age=" << vinsAgeS(vins_state, runtime.now_s()) << " s"
+          << " valid=" << (vins_state.valid ? "1" : "0")
+          << " reason=" << vinsReasonForDisplay(vins_state, runtime.now_s(),
+                                                config.vins_timeout_s)
+          << "\n";
     }
 
     if (state.received) {
@@ -615,7 +785,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
     } else {
       log << "native=not received\n";
     }
-    log << "state seq=" << state.seq << " age=" << state.age_s << " s\n";
+    log << "native state seq=" << state.seq << " age=" << state.age_s
+        << " s\n";
     log << "stop_failed=" << (session_state.stop_failed ? "YES" : "no") << "\n";
     if (session_state.stop_failed) {
       log << "!! 停止请求此前失败；本会话只允许 status、stop、quit。"
@@ -673,7 +844,7 @@ int runInteractiveSession(const Config& config, Backend& backend,
     if (!stop_ok) {
       log << "!! StopMove 失败：请立即用遥控器或现场方式停止机器人，"
              "并保持安全距离。\n";
-      log << "!! 停止失败状态已生效：本会话拒绝 straight/goto/yaw，"
+      log << "!! 停止失败状态已生效：本会话拒绝运动命令，"
              "只允许 status、stop、quit；不会自动重试或恢复运动。\n";
     } else if (was_failed) {
       log << "StopMove 返回 0；但本会话的停止失败状态保持，"
@@ -703,10 +874,16 @@ int runInteractiveSession(const Config& config, Backend& backend,
       writeEvent("terminal_rejected", "origin_unset");
       return false;
     }
-    state = backend.snapshot();
-    if (!isFresh(state)) {
-      log << "原生状态不新鲜，暂不能开始运动。\n";
-      writeEvent("terminal_rejected", "state_stale");
+    refreshControl(runtime.now_s());
+    if (!control_valid) {
+      if (config.control_source == ControlSource::Vins) {
+        log << "VINS 状态不可用（" << control_reason
+            << "），暂不能开始运动。\n";
+        writeEvent("terminal_rejected", "vins_invalid:" + control_reason);
+      } else {
+        log << "原生状态不新鲜，暂不能开始运动。\n";
+        writeEvent("terminal_rejected", "state_stale");
+      }
       return false;
     }
     return true;
@@ -732,7 +909,7 @@ int runInteractiveSession(const Config& config, Backend& backend,
   // the base_link pose at command time and ends at (target_x, target_y).
   auto makeNavigationTask = [&](TaskType type, double target_x,
                                 double target_y) {
-    const LocalPose local = toLocalPose(state, origin);
+    const LocalPose local = toLocalPose(control_state, origin);
     const double dx = target_x - local.x;
     const double dy = target_y - local.y;
     const double distance = std::hypot(dx, dy);
@@ -758,7 +935,7 @@ int runInteractiveSession(const Config& config, Backend& backend,
   auto startNavigationTask = [&](TaskType type, double target_x,
                                  double target_y, const std::string& prefix) {
     Task new_task = makeNavigationTask(type, target_x, target_y);
-    const LocalPose local = toLocalPose(state, origin);
+    const LocalPose local = toLocalPose(control_state, origin);
     const double distance = std::hypot(target_x - local.x,
                                        target_y - local.y);
     if (distance <= kPositionToleranceM || new_task.path.empty()) {
@@ -785,6 +962,33 @@ int runInteractiveSession(const Config& config, Backend& backend,
       writeEvent("terminal_rejected", "origin_already_set");
       return;
     }
+
+    if (config.control_source == ControlSource::Vins) {
+      std::string error;
+      const bool ok =
+          vins_client != nullptr &&
+          vins_client->requestOrigin(&error, config.vins_origin_timeout_s);
+      if (!ok) {
+        if (error.empty()) {
+          error = "no VINS bridge client";
+        }
+        log << "VINS origin 失败: " << error << "；不进入运动。\n";
+        writeEvent("terminal_rejected", "vins_origin_failed:" + error);
+        return;
+      }
+      origin.set = true;
+      origin.native_x = 0.0;
+      origin.native_y = 0.0;
+      origin.native_yaw = 0.0;
+      refreshControl(runtime.now_s());
+      writeEvent("origin_set", "vins_nav (native origin fields unused)");
+      log << "VINS origin 已建立; 控制来源=vins; "
+             "等待 VINS STATE 后才允许 plan/goto/yaw。\n";
+      log << "T_base_cam 的 measured 标记由桥接日志/配置给出；"
+             "本工具不猜测外参。\n";
+      return;
+    }
+
     state = backend.snapshot();
     if (!isFresh(state)) {
       log << "原生状态不新鲜，暂不能记录起点。\n";
@@ -858,6 +1062,12 @@ int runInteractiveSession(const Config& config, Backend& backend,
           handleOrigin();
           break;
         case CommandType::Straight: {
+          if (config.control_source == ControlSource::Vins) {
+            log << "straight 只支持 --control-source native；"
+                   "VINS 模式下未发送运动。\n";
+            writeEvent("terminal_rejected", "vins_source_requires_native");
+            break;
+          }
           if (!canStart()) {
             break;
           }
@@ -871,6 +1081,12 @@ int runInteractiveSession(const Config& config, Backend& backend,
           break;
         }
         case CommandType::Pulse: {
+          if (config.control_source == ControlSource::Vins) {
+            log << "pulse 只支持 --control-source native；"
+                   "VINS 模式下未发送运动。\n";
+            writeEvent("terminal_rejected", "vins_source_requires_native");
+            break;
+          }
           if (!canStart()) {
             break;
           }
@@ -929,7 +1145,7 @@ int runInteractiveSession(const Config& config, Backend& backend,
             writeEvent("terminal_rejected", "plan_distance_cap");
             break;
           }
-          const LocalPose local = toLocalPose(state, origin);
+          const LocalPose local = toLocalPose(control_state, origin);
           const double c = std::cos(local.heading);
           const double s = std::sin(local.heading);
           const double target_x = local.x + c * command.x - s * command.y;
@@ -960,7 +1176,7 @@ int runInteractiveSession(const Config& config, Backend& backend,
           new_task.timeout_s = kYawTimeoutS;
           startTask(new_task,
                     "local_deg=" + number(target_deg, 3) +
-                        " native_yaw_raw=" +
+                        " target_yaw_raw=" +
                         number(new_task.target_native_yaw, 6));
           show_prompt = false;
           break;
@@ -995,10 +1211,16 @@ int runInteractiveSession(const Config& config, Backend& backend,
       continue;
     }
 
-    state = backend.snapshot();
-    if (!isFresh(state)) {
-      log << "任务中原生状态不新鲜: " << staleDetail(state) << "\n";
-      performStop(TaskEndReason::StateStale, true);
+    refreshControl(runtime.now_s());
+    if (!control_valid) {
+      if (config.control_source == ControlSource::Vins) {
+        log << "VINS 状态不可用（" << control_reason
+            << "）；立即停止，不回退原生位置。\n";
+        performStop(TaskEndReason::VinsInvalid, true);
+      } else {
+        log << "任务中原生状态不新鲜: " << staleDetail(state) << "\n";
+        performStop(TaskEndReason::StateStale, true);
+      }
       continue;
     }
 
@@ -1028,7 +1250,7 @@ int runInteractiveSession(const Config& config, Backend& backend,
         break;
       case TaskType::Goto:
       case TaskType::Plan: {
-        const LocalPose local = toLocalPose(state, origin);
+        const LocalPose local = toLocalPose(control_state, origin);
         const double dx = task.target_local_x - local.x;
         const double dy = task.target_local_y - local.y;
         const double distance = std::hypot(dx, dy);
@@ -1052,7 +1274,7 @@ int runInteractiveSession(const Config& config, Backend& backend,
           body.yaw_rad = local.heading;
           body.velocity_mps = go2_nav::Vec2{0.0, 0.0};
           body.yaw_rate_radps = 0.0;
-          body.valid = isFresh(state);
+          body.valid = control_valid;
 
           go2_nav::PurePursuitConfig track_config;
           track_config.max_speed_mps = config.goto_max_speed_mps;
@@ -1081,7 +1303,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
         break;
       }
       case TaskType::Yaw: {
-        const double error = wrapPi(task.target_native_yaw - state.yaw_rad);
+        const double error =
+            wrapPi(task.target_native_yaw - control_state.yaw_rad);
         if (std::abs(error) <= kYawToleranceRad) {
           done = true;
           end_reason = TaskEndReason::Arrived;
@@ -1143,6 +1366,16 @@ int runInteractiveSession(const Config& config, Backend& backend,
       context.has_api = true;
       context.api = move_return;
       context.detail = call_error;
+      context.vins_control = config.control_source == ControlSource::Vins;
+      context.vins = context.vins_control ? &vins_state : nullptr;
+      context.vins_valid = control_valid;
+      context.vins_reason = control_reason;
+      context.has_local = control_local_available;
+      context.local = control_local;
+      context.has_vins_age =
+          context.vins_control && vins_state.received;
+      context.vins_age_s =
+          context.has_vins_age ? runtime.now_s() - vins_state.stamp_s : 0.0;
       writeRow(csv, command_time - session_t0, "cmd", context);
       csv.flush();
     }
