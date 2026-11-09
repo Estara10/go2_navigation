@@ -58,4 +58,4 @@ cmake --build "$PROJECT_ROOT/build/native_motion-sdk" --parallel 2
 
 ## 接口与协作
 
-统一参考点、坐标系、单位、时间戳和速度含义见 `docs/COLLABORATION.md`。先确认接口，再按定位、路径跟踪、Go2 接口与实验三人分工实现。
+统一参考点、坐标系、单位、时间戳和速度含义见 `docs/INTERFACE.md`；协作流程、分支/PR 和实机安全边界见 `docs/COLLABORATION.md`。先确认接口，再按定位、路径跟踪、Go2 接口与实验三人分工实现。
