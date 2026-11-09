@@ -94,14 +94,18 @@ void printUsage(const char* program) {
       << "仅使用 Go2 原生 SportClient Move/StopMove 和 rt/sportmodestate；\n"
       << "不创建 LowCmd、不释放/切换控制权、不自动站立或切换步态。\n"
       << "运行后等待有效原生状态，先输入 origin 确认起点，再输入运动命令。\n"
-      << "命令: status | origin | straight | goto x y | yaw deg | stop | "
-         "quit | help\n"
+      << "命令: status | origin | straight | pulse vx duration | goto x y | "
+         "plan forward left | yaw deg | stop | quit | help\n"
       << "普通命令按 Enter 执行；Ctrl+C 立即中断，不需要 Enter。\n"
       << "--vx/--duration-s 只配置 straight 短时直走（默认 0.10 m/s, 2.0 s）；\n"
       << "允许 vx [0.05, 0.50] m/s, duration [1.0, 30.0] s。\n"
-      << "--goto-max-speed/--goto-approach-speed 只配置 goto（默认 0.30/0.30 m/s）；\n"
+      << "pulse 接受 vx [0.05, 0.50] m/s、duration [0.1, 0.5] s；\n"
+      << "到期立即进入现有停止流程并调用 StopMove。\n"
+      << "--goto-max-speed/--goto-approach-speed 配置 plan 和 goto"
+         "（默认 0.30/0.30 m/s）；\n"
       << "允许 [0.05, 0.50] m/s，approach 不得大于 max；approach 是首轮防失速下限，"
          "不是已验证的硬件最低速度。\n"
+      << "plan/goto 使用一次生成的路径和 Pure Pursuit，只发送 vx/vyaw，vy=0。\n"
       << "默认 CSV: logs/go2_native_motion/<UTC时间戳>/native_motion.csv\n"
       << "--interface lo 被拒绝；离线自检请运行 go2_native_motion_selftest。\n";
 }
@@ -424,6 +428,7 @@ int main(int argc, char** argv) {
             << "DDS domain=" << options.domain
             << ", interface=" << options.interface_name << "\n"
             << "CSV: " << options.config.csv_path << "\n"
+            << "正常运动只发送 vx/vyaw，vy=0；plan/goto 使用一次生成的路径。\n"
             << "普通命令按 Enter 执行；Ctrl+C 立即中断任务并尝试 StopMove。\n";
 
   try {

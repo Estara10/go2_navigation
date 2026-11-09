@@ -4,12 +4,14 @@
 
 独立于论文策略控制的 Go2 原生运动工具。用于：
 
-- 保留上一版短时直走，作为首次现场停止验证入口；
-- 通过终端 `goto x y` 到初始坐标系中的固定点；
-- 通过 `yaw deg` 转到相对初始朝向的角度；
+- 保留短时直走，作为首次现场停止验证入口；
+- 通过 `pulse vx duration` 发送 0.1–0.5 s 短脉冲，测量最小步长和停车距离；
+- 通过终端 `goto x y` 到初始坐标系中的固定点，使用一次生成的路径 + Pure Pursuit；
+- 通过 `plan forward left` 按下令时航向指定相对目标；
+- 通过 `yaw deg` 原地转到相对初始朝向的角度；
 - 运动过程中随时 `status`、`stop`、`quit` 或按 `Ctrl+C`。
 
-不接入 D435i、VINS、雷达、SLAM、路径规划或自动避障；不验证论文控制器或策略。本轮只做离线修改与验证，未连接或操作机器人。
+不接入 D435i、VINS、雷达、SLAM 或自动避障；本次用原生 SportModeState 的本地位姿做**机制验证**，不是 A1 的 D435i/VINS 5 cm 验收。本轮只做离线修改与验证，未连接或操作机器人。
 
 ## 范围
 
@@ -17,7 +19,8 @@
 
 - 使用 `unitree::robot::go2::SportClient::Move(vx, vy, vyaw)` 发送速度指令；
 - 使用 `SportClient::StopMove()` 主动停止；
-- 订阅 `rt/sportmodestate`，使用原生位置、线速度和航向估计；
+- 订阅 `rt/sportmodestate`，使用原生位置和航向估计；
+- 使用 `scripts/go2_nav_plan/` 的直线/Dubins 路径和 Pure Pursuit；
 - 读写终端命令和 CSV 记录。
 
 程序不做：
@@ -28,7 +31,9 @@
 - 不启动论文控制器、策略推理、相机、VINS、雷达或定位程序；
 - 不自动站立、趴伏、起立或切换步态；
 - 不采集 `LowState`；
-- 不做路径规划、障碍物避让、目标队列或无限重试。
+- 不做障碍物避让、目标队列或无限重试。
+
+**正常运动只发送 `vx` 和 `vyaw`，`vy` 固定为 0；不再通过侧移靠近目标。**
 
 现场由用户先用原装遥控器站稳并保持遥控器在手。程序默认不运动，必须先 `origin` 确认起点，再输入运动命令。
 
@@ -69,15 +74,17 @@
 
 因此 `goto 1 0` 表示“起始位置前方 1 米”的固定点。`origin` 记录当时的原生位置 `(x0,y0)` 和原生 yaw `yaw0`，之后：
 
-- `goto` 目标在任务开始时一次性转换为原生定位坐标系中的固定目标，不会每个周期重新设成“当前前方 1 米”；
-- 每个控制周期用当前原生位置和当前原生 yaw，把固定目标的位置误差旋转到当前机体系，生成 `vx/vy`；
-- `yaw` 目标是初始朝向加指定角度，转换为固定原生 yaw；每个周期用当前 yaw 计算带 ±180° 回绕的角误差；
-- `goto` 只处理位置，不控制朝向；`yaw` 只处理朝向，不平移；
+- `goto` 目标在任务开始时一次性转换为本地点，不会每个周期重新设成“当前前方 1 米”；
+- 任务开始时从当前本地位置/朝向往固定目标生成一次路径（直线或 Dubins），之后只跟踪这条路径；
+- 每个控制周期用当前本地位置/航向运行 Pure Pursuit，输出 `vx/vyaw`，`vy` 固定为 0；目标在侧方或后方时先转向再前进，不用横移；
+- `plan f l` 在接收命令时按当前机头方向把相对目标转成本地固定点，之后即使机器人转向，目标也不移动；
+- `goto` 只处理位置，不单独控制终点朝向；路径终点朝向取“任务开始时当前位置指向目标”的方位角；
+- `yaw` 目标是初始朝向加指定角度，转换为固定原生 yaw；每个周期用当前 yaw 计算带 ±180° 回绕的角误差；原地转向不产生平移；
 - 本轮不支持运行中重设原点。需要重新 `origin` 时，`quit` 后重新启动。
 
 `±180°` 统一按回绕后的 `+π`（左转）处理。`yaw 190` 会规范化为相对初始朝向的 `-170°`，按最短角度转过去；`yaw 270` 等价于 `yaw -90`。
 
-本工具内部按 `position` 为米、原生 yaw 为弧度、左转为正、`position`/yaw 同一右手坐标系进行目标转换和误差计算。以上单位、符号和同系假设尚未在本台 Go2 上实测；首次 `goto`/`yaw` 必须小范围核对，方向或尺度不符立即停止。
+本工具内部按 `position` 为米、原生 yaw 为弧度、左转为正、`position`/yaw 同一右手坐标系进行目标转换和路径跟踪。以上单位、符号和同系假设尚未在本台 Go2 上实测；首次 `goto`/`plan`/`yaw` 必须小范围核对，方向或尺度不符立即停止。原生速度坐标系未核实用于控制，`BodyState.velocity_mps` 固定置 0，只用位置和航向。
 
 ## 终端命令
 
@@ -87,9 +94,11 @@
 | --- | --- |
 | `status` | 显示原生位置、线速度、航向、状态时龄、当前任务、本地位置/朝向和 `stop_failed` 状态 |
 | `origin` | 用户确认机器人静止后，记录初始位置和航向；本轮只允许一次 |
-| `straight` | 保留上一版短时直走，使用 `--vx` 和 `--duration-s` |
-| `goto x y` | 到初始坐标系中的固定点，单位米 |
-| `yaw deg` | 转到相对初始朝向的角度，单位度 |
+| `straight` | 短时直走，使用 `--vx` 和 `--duration-s` |
+| `pulse vx duration` | 短脉冲：`vx` 0.05–0.50 m/s，`duration` 0.1–0.5 s；到期立即 `StopMove` |
+| `goto x y` | 到初始坐标系中的固定点，用一次生成的路径 + Pure Pursuit，`vy=0` |
+| `plan forward left` | 按下令时航向指定相对目标（前、左），一次固定，用路径 + Pure Pursuit |
+| `yaw deg` | 原地转到相对初始朝向的角度，单位度；不产生平移 |
 | `stop` | 终止当前任务并调用 `StopMove`；空闲时也执行；失败后可重复 `stop`，但不解除本会话失败状态 |
 | `quit` | 先执行停止，再退出；本会话出现过停止失败时退出码为 3 |
 | `help` | 显示命令帮助 |
@@ -97,18 +106,18 @@
 运动期间终端仍继续读取：
 
 - 允许 `status`、`stop`、`quit`；
-- 新的 `goto`、`yaw`、`straight` 会提示先 `stop`，不建立任务队列；
+- 新的 `goto`、`plan`、`pulse`、`straight`、`yaw` 会提示先 `stop`，不建立任务队列；
 - `origin` 在任务中会被拒绝；
 - `Ctrl+C` 立即中断任务，停止并退出。
 
-`origin` 和 `straight` 是为满足“人工确认起点”和“保留上一版入口”增加的命令；原命令表中的 `goto/yaw/stop/quit/status` 均保留。`straight` 沿当前机体系前方运动，不使用初始坐标系；`goto/yaw` 才使用初始坐标系。
+`origin` 和 `straight` 是为满足“人工确认起点”和“保留短时入口”增加的命令；`goto/yaw/stop/quit/status` 均保留。`straight` 沿当前机体系前方运动，不使用初始坐标系；`goto/plan/yaw` 使用初始本地点。
 
 ### StopMove 失败后的会话状态
 
 `StopMove()` 返回非零或抛出异常时，工具进入并保持“停止失败”状态：
 
 - 立即提示用户用遥控器或现场方式确认机器人停止，并保持安全距离。
-- 本会话拒绝 `straight`、`goto`、`yaw`，也拒绝 `origin`、`help` 和无法识别命令；只允许 `status`、`stop`、`quit`。
+- 本会话拒绝 `straight`、`pulse`、`goto`、`plan`、`yaw`，也拒绝 `origin`、`help` 和无法识别命令；只允许 `status`、`stop`、`quit`。
 - 用户可再次输入 `stop`；工具不会自动重试，也不会自动恢复运动。
 - 即使后续 `stop` 返回 0，本会话仍保持停止失败状态，运动命令仍被拒绝。要重新运动，必须 `quit` 后重新启动，并先现场确认机器人已停止。
 - `quit`/`Ctrl+C` 仍会尝试最后一次 `StopMove`；只要本会话进入过停止失败状态，退出码为 3，即使最后一次 `StopMove` 返回 0。最后一次返回码仍记录在 CSV 和终端。
@@ -130,7 +139,19 @@
 
 `0.50 m/s` 和 `30 s` 只是输入上限；本轮现场首项固定为 `0.20 m/s`、`6 s`，不自动执行更高速度、更长时长或连续任务。
 
-### 通用和 `goto` / `yaw`
+### 短脉冲 `pulse`
+
+| 项目 | 值 | 说明 |
+| --- | --- | --- |
+| `vx` 范围 | `[0.05, 0.50] m/s` | 超出直接拒绝，不发送运动 |
+| `duration` 范围 | `[0.1, 0.5] s` | 超出直接拒绝，不发送运动 |
+| `vy`, `vyaw` | 固定 `0` | 只发前进速度 |
+| 重发 | `0.10 s`（10 Hz） | 持续 `duration` 后立即进入停止流程 |
+| 结束动作 | `StopMove` | 与现有停止失败锁存共用 |
+
+一次 `Move` 可能让机器人保持约 1 秒；短脉冲的实际位移包含指令延迟、起步和停车距离，**不能用 `vx × duration` 当作实际位移**。`pulse` 正是用来测这些量。
+
+### 通用、`plan` 和 `goto` / `yaw`
 
 | 项目 | 值 | 状态 |
 | --- | --- | --- |
@@ -139,18 +160,19 @@
 | 启动等待状态期限 | `10.0 s` | 超时不发送运动指令 |
 | SDK 单次调用超时 | `1.0 s` | `SetTimeout(1.0f)` |
 | 终端命令轮询周期 | `0.05 s` | 空闲时检查命令 |
-| `goto` 最大目标距离 | `3.0 m` | 首次试验安全上限 |
-| `goto` 位置容差 | `0.05 m` | 到达判据，不代表实际精度；此前10厘米容差的现场记录保持原样 |
-| `goto` 位置增益 | `0.8 1/s` | 比例速度，接近目标减速 |
-| `goto` 最大平移速度 | 默认 `0.30 m/s` | `--goto-max-speed`，范围 `0.05–0.50` |
-| `goto` 接近目标速度下限 | 默认 `0.30 m/s` | `--goto-approach-speed`，范围 `0.05–max`；首轮防失速候选，不是硬件最低速度 |
-| `goto` 最长运行时间 | `30.0 s` | 超时停止 |
+| `plan`/`goto` 最大目标距离 | `3.0 m` | 首次试验安全上限；`plan` 按相对距离，`goto` 按初始坐标距离 |
+| `plan`/`goto` 位置容差 | `0.05 m` | 到达判据，不代表实际精度；此前 10 厘米容差的现场记录保持原样 |
+| `plan`/`goto` 最大平移速度 | 默认 `0.30 m/s` | `--goto-max-speed`，范围 `0.05–0.50` |
+| `plan`/`goto` 接近目标速度下限 | 默认 `0.30 m/s` | `--goto-approach-speed`，范围 `0.05–max`；首轮防失速候选，不是硬件最低速度 |
+| 路径最小转弯半径 | `goto_max_speed / 0.50`，默认 `0.60 m` | `0.30 / 0.50`；由 `makePath` 使用 |
+| Pure Pursuit 前视距离 | 默认 `0.25–0.80 m` | 初始离线值，未按实机步态验证 |
+| `plan`/`goto` 最长运行时间 | `30.0 s` | 超时停止 |
 | `yaw` 朝向容差 | `5°` | 到达判据 |
 | `yaw` 朝向增益 | `1.5 1/s` | 比例角速度 |
 | `yaw` 最大角速度 | `0.50 rad/s` | 上限 |
 | `yaw` 最长运行时间 | `15.0 s` | 超时停止 |
 
-`goto` 每周期按固定目标的位置误差计算机体系 `vx/vy`；速度随距离减小，但接近目标时不低于 `--goto-approach-speed`，以避免速度降入不能连续迈步的区间。0.30 m/s 是首轮已实测能走的候选，不是已验证的硬件最低速度；approach 下限也按同一候选先设，后续可单独降低验证。没有路径规划、障碍避让、自动重试或目标队列。原生位置噪声或机器人最小步速可能导致超时或停不到容差内，这属于现场参数验证内容。`ARRIVED` 只表示原生估计进入容差，不表示实际位置或角度达到该精度；现场仍须用地面标记、卷尺或量角器核对。
+`plan`/`goto` 在任务开始时生成一次路径（直线或 Dubins），之后每个周期用当前本地位姿运行 Pure Pursuit，输出 `vx/vyaw`，**`vy` 固定为 0**。目标在侧方或后方时通过转向和前进跟踪路径，不再侧移。速度随路径剩余距离和曲率调节，接近目标时不低于 `--goto-approach-speed`；0.30 m/s 是首轮已实测能走的候选，不是已验证的硬件最低速度。没有障碍避让、自动重试或目标队列。原生位置噪声或机器人最小步速可能导致超时或停不到容差内，这属于现场参数验证内容。`ARRIVED` 只表示原生估计进入容差，不表示实际位置或角度达到该精度；现场仍须用地面标记、卷尺或量角器核对。
 
 `straight` 的 0.50 m/s 上限只适用于 `straight`；`goto` 速度由 `--goto-max-speed`/`--goto-approach-speed` 独立配置，`yaw` 参数未变。
 
@@ -173,6 +195,8 @@ cmake --build "$PROJECT_ROOT/build/native_motion-offline" --parallel 2
 "$PROJECT_ROOT/build/native_motion-offline/go2_native_motion_selftest"
 ```
 
+该构建会一并构建 `scripts/go2_nav_plan/`（仅标准库），不需要额外 SDK 或单独构建目录。
+
 如需构建实机入口，必须显式给出 SDK 前缀。SDK 是外部依赖，不随本目录复制：
 
 ```bash
@@ -193,20 +217,20 @@ cmake --build "$PROJECT_ROOT/build/native_motion-sdk" --parallel 2
 
 本工具已有自检覆盖：
 
-- 非零初始航向下的 `goto` 目标转换、当前位置转换和机体系误差转换；
+- `pulse` 的 0.1–0.5 s 接受、越界拒绝、每周期只发 `vx`、到期 `StopMove`、停止失败锁存；
+- `plan` 相对目标在下令时固定，机器人转向后目标不移动；
+- `goto` 保留初始坐标固定点语义，但改用一次生成的路径 + Pure Pursuit；
+- `plan`/`goto` 侧方目标通过转向和前进处理，`vy=0`；
+- `plan`/`goto` 到达、超时、状态超期后的停止，以及停止后不再发送 `cmd`；
+- `straight`、`pulse`、`goto`、`plan` 的 Move 和 CSV `cmd_vy_mps` 均为 0；
 - 航向跨 ±180° 的回绕；
-- 运动过程中接收 `stop`，且 `stop_request` 之后不再出现 `cmd` 行；
-- `straight` 到时停止和 `stop` 中途停止；
-- `goto` 到达、`goto` 超时后的停止；
-- `goto` 的 `--goto-max-speed`/`--goto-approach-speed` 边界，以及接近目标时速度不低于 approach 下限；
-- `yaw` 跨 ±180° 的转向方向；
-- 任务中新的 `goto/yaw` 被拒绝，不排队；
+- 任务中新的运动命令被拒绝，不排队；
 - 未 `origin` 禁止运动、`origin` 只允许一次；
 - `Move` 返回错误、状态超期、`Ctrl+C`、运动中 `quit`、启动超时；
-- `StopMove` 返回非零或抛异常后保持失败状态：继续输入 `goto/yaw/straight` 被拒绝且不产生 `Move`；允许再次 `stop`，但不会自动重试；后续 `stop` 返回 0 也不恢复运动；退出码为 3；
+- `StopMove` 返回非零或抛异常后保持失败状态：继续输入运动命令被拒绝且不产生 `Move`；允许再次 `stop`，但不会自动重试；后续 `stop` 返回 0 也不恢复运动；退出码为 3；
 - 命令解析和 `--vx/--duration-s` 上限（0.50 m/s、30 s 可接受；超出拒绝）。
 
-自检使用替代 `Backend`、模拟时钟和脚本化终端命令，不创建 `rt/lowcmd` 发布器，不初始化真实 DDS。
+自检使用替代 `Backend`、模拟时钟和脚本化终端命令，不创建 `rt/lowcmd` 发布器，不初始化真实 DDS。原生日姿只用于机制验证，不代表 D435i/VINS 或 5 cm 精度。
 
 检查源码没有低层发包或模式切换调用：
 
@@ -273,17 +297,18 @@ env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
 4. 运行上面的 0.20 m/s、6 秒命令。
 5. 等待终端显示有效原生状态，确认终端打印的本次 vx=0.200 m/s、duration=6.000 s。
 6. 确认机器人静止后输入 `origin`，记录起点。
-7. 可选但建议：机器人静止时输入 `stop`，确认终端能收到电脑侧 `StopMove` 返回；该命令不发送 `Move`。若出现 `StopMove 失败`，立即按停止失败流程处理，不要继续 `straight/goto/yaw`。
+7. 可选但建议：机器人静止时输入 `stop`，确认终端能收到电脑侧 `StopMove` 返回；该命令不发送 `Move`。若出现 `StopMove 失败`，立即按停止失败流程处理，不要继续 `straight/pulse/plan/goto/yaw`。
 8. 输入一次 `straight`，观察起步后是否连续迈步、到时是否实际停住，并用地面标记/卷尺测量实际位移；理论指令距离为 `0.20 × 6 = 1.2 m`，不代表实际距离。
 9. 若仍只有一次迈步、持续前倾或姿态异常，立即停止试验，不自动继续增加速度、时长或连续任务。
 10. 用户确认实际停住后输入 `quit` 退出。
-11. 只有本次直走和停止结果审阅通过后，才安排 `goto`、`yaw` 或更高速度/更长时长。
+11. 只有本次直走和停止结果审阅通过后，才安排 `pulse`、`plan`、`goto`、`yaw` 或更高速度/更长时长。
 
 终端示例：
 
 ```text
 本次 straight 参数: vx=0.200 m/s, duration=6.000 s（vy=0, vyaw=0；10 Hz 重发）
-goto 参数: vmax=0.300 m/s, approach=0.300 m/s（approach 为首轮防失速候选，不是已验证的硬件最低速度）
+pulse 允许范围: vx 0.05-0.50 m/s, duration 0.1-0.5 s
+plan/goto 参数: vmax=0.300 m/s, approach=0.300 m/s（approach 为首轮防失速候选，不是已验证的硬件最低速度）
 ...
 命令> origin
 起点已记录: native x=... y=... yaw_raw=...
@@ -296,31 +321,50 @@ goto 参数: vmax=0.300 m/s, approach=0.300 m/s（approach 为首轮防失速候
 命令> quit
 ```
 
-### 短距离 `goto` 与 `yaw`
+### 短脉冲 `pulse` 测量最小步长 / 停车距离
 
-短距离 goto 首试用 0.5 米，并显式使用 `--goto-max-speed 0.30 --goto-approach-speed 0.30`（也是当前默认值）。重新 `origin` 后输入：
+在 `straight` 和停止验证通过后，另起独立会话。确认状态新鲜并 `origin`，先确认现场停止方式，然后从小脉冲开始：
 
 ```text
-命令> goto 0.5 0
-任务开始: goto local=(0.500,0.000) native=(...) vmax=0.300 approach=0.300
+命令> pulse 0.20 0.10
+任务开始: pulse vx=0.200 duration=0.100 vy=0 vyaw=0
 ...
-任务结束: goto ARRIVED
+任务结束: pulse COMPLETED
+停止流程: reason=COMPLETED StopMove返回=0
 ```
 
-`approach=0.30` 是接近目标时的防失速下限候选，不是已验证的硬件最低速度；0.30 也只是当前已实测能走的候选最大速度。观察是否连续迈步、到时是否实际停住、是否明显过冲，并用地面标记/卷尺测量实际位移。只做这一次，不自动提高速度、降低下限或连续追加 goto。完整独立启动命令见 [FIELD_COMMANDS.md 第7节](FIELD_COMMANDS.md)；`--vx/--duration-s` 只影响 `straight`，不会被 `goto` 使用。
+再按已审阅的顺序尝试 `pulse 0.20 0.20`、`pulse 0.20 0.30`、`pulse 0.20 0.50`；每次只做一次，测量实际位移、是否连续迈步、停后位置和停车距离。**不要用 `0.20 × duration` 当作实际位移。** 若出现越过目标、姿态异常、未停稳或停止失败，立即停止，不自动增加速度或时长。`pulse` 的范围是 `vx 0.05–0.50 m/s`、`duration 0.1–0.5 s`，超出直接拒绝。
 
-再用 1 米目标验证固定坐标系：
+### 短距离 `plan` / `goto` 与 `yaw`
+
+`plan` 的相对目标在命令时按当前机头方向固定；`goto` 仍到初始坐标系固定点。两者都用一次生成的路径 + Pure Pursuit，只发 `vx/vyaw`，`vy=0`。短距离首试用 0.5 米，并显式使用 `--goto-max-speed 0.30 --goto-approach-speed 0.30`（也是当前默认值）。重新 `origin` 后输入：
+
+```text
+命令> plan 0.5 0
+任务开始: plan relative=(0.500,0.000) local=(...) native=(...) path_len=... radius=0.600 vy=0
+...
+任务结束: plan ARRIVED
+```
+
+再用 1 米目标验证固定坐标系，并测试侧方目标：
 
 ```text
 命令> goto 1 0
-任务开始: goto local=(1.000,0.000) native=(...) vmax=0.300 approach=0.300
+任务开始: goto fixed_local=(1.000,0.000) local=(...) native=(...) path_len=... radius=0.600 vy=0
 ...
 任务结束: goto ARRIVED
 ```
 
-到点判据来自原生位置估计，不代表实际到点。用地面标记和卷尺核对实际误差，并用 `status` 查看本地位置。
+```text
+命令> plan 0 1
+任务开始: plan relative=(0.000,1.000) local=(...) native=(...) path_len=... radius=0.600 vy=0
+...
+任务结束: plan ARRIVED
+```
 
-再用小角度验证转向方向：
+侧方目标会通过转向和前进跟踪路径；观察是否原地转向、是否连续迈步、是否实际停住，**不应出现侧移**。`ARRIVED` 来自原生估计，不代表实际到点；用地面标记和卷尺核对。`--vx/--duration-s` 只影响 `straight`，不会被 `plan`/`goto` 使用。
+
+再用小角度验证原地转向；`yaw` 只发 `vyaw`，不产生平移：
 
 ```text
 命令> yaw 30
@@ -329,16 +373,12 @@ goto 参数: vmax=0.300 m/s, approach=0.300 m/s（approach 为首轮防失速候
 任务结束: yaw ARRIVED
 ```
 
-短距离 `goto 0.5 0` 首试通过、确认连续迈步和停止正常后，才考虑 `yaw 90`、更远 `goto`。建议在独立、已审阅的会话中再先 `goto 1 0` 验证前向，用 `goto 0 1` 验证左侧 Y 方向，再用 `yaw 30` 验证左转。任一方向与预期不符，立即停止，不要扩大目标。
-
-任何异常都先停止并回到直走/停止验证，不要直接扩大目标。
-
-若终端出现 `StopMove 失败`：立即用遥控器或现场方式停止机器人，保持安全距离；本会话只允许 `status`、`stop`、`quit`，不要继续输入 `goto/yaw/straight`；可再次 `stop` 尝试，但工具不会自动重试或恢复运动；确认机器人停止后 `quit`。如需继续，重新启动并重新 `origin`。
+若终端出现 `StopMove 失败`：立即用遥控器或现场方式停止机器人，保持安全距离；本会话只允许 `status`、`stop`、`quit`，不要继续输入 `straight/pulse/plan/goto/yaw`；可再次 `stop` 尝试，但工具不会自动重试或恢复运动；确认机器人停止后 `quit`。如需继续，重新启动并重新 `origin`。
 
 ## 停止、终端和遥控
 
 - **停止顺序**：任何停止触发先终止当前任务并清空任务状态，后续循环不会再次发送 `Move`；然后调用一次 `StopMove()`，记录返回码或异常；再回到空闲。正常停止后只有用户重新输入运动命令才会再次运动；若 `StopMove` 失败，本会话不再接受运动命令。
-- **正常到达 / `straight` 到时 / 超时**：先结束任务，再 `StopMove`，回到空闲。
+- **正常到达 / `straight` 到时 / `pulse` 到期 / 超时**：先结束任务，再 `StopMove`，回到空闲。
 - **`stop`**：终止当前任务并调用 `StopMove`；空闲时也执行停止调用并记录。
 - **`quit`**：先执行停止流程，再退出；本会话有停止失败时退出码 3。
 - **`Ctrl+C`**：中断任务，执行停止流程并退出；状态就绪后即使空闲也会尝试 `StopMove`；本会话有停止失败时退出码 3。
@@ -364,13 +404,14 @@ goto 参数: vmax=0.300 m/s, approach=0.300 m/s（approach 为首轮防失速候
 | `wall_time_utc` | 本机系统时间，UTC，毫秒 |
 | `mono_s` | 本机单调时钟，会话开始后的秒数 |
 | `record_type` | `cmd` 或 `event` |
-| `task` | `none`、`straight`、`goto`、`yaw` |
+| `task` | `none`、`straight`、`pulse`、`goto`、`plan`、`yaw` |
 | `state_seq`, `state_age_s` | 原生状态接收序号和该样本的本机接收时龄 |
 | `origin_native_x/y/yaw` | `origin` 记录的固定原点 |
-| `target_local_x/y`, `target_local_yaw_deg` | 初始坐标系中的固定目标 |
-| `target_native_x/y/yaw` | 任务开始时转换出的原生固定目标 |
+| `target_local_x/y`, `target_local_yaw_deg` | `goto`/`plan` 的本地固定目标和路径终点方位角；`yaw` 的本地目标角 |
+| `target_native_x/y/yaw` | 任务开始时转换出的原生固定目标/角度（记录用） |
+| `pulse_vx_mps`, `pulse_duration_s` | `pulse` 的指令速度和时长；其他任务为空 |
 | `local_pos_x/y`, `local_heading_deg` | 当前原生状态在初始坐标系中的位置和朝向 |
-| `cmd_vx_mps`, `cmd_vy_mps`, `cmd_vyaw_radps` | 本次发送的速度指令 |
+| `cmd_vx_mps`, `cmd_vy_mps`, `cmd_vyaw_radps` | 本次发送的速度指令；正常任务 `cmd_vy_mps` 恒为 0 |
 | `native_pos_x/y/z` | 原生 `position()` 原样值 |
 | `native_vel_x/y/z` | 原生 `velocity()` 原样值 |
 | `native_yaw_raw` | 原生 `imu_state().rpy()[2]` 原样值 |

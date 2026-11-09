@@ -1,5 +1,6 @@
 #include "native_motion_core.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -47,6 +48,91 @@ bool noCmdAfter(const std::string& csv, const std::string& marker) {
   return csv.find(",cmd,", position) == std::string::npos;
 }
 
+std::vector<std::string> splitCsvLine(const std::string& line) {
+  std::vector<std::string> fields;
+  std::string current;
+  bool quoted = false;
+  for (const char c : line) {
+    if (c == '"') {
+      quoted = !quoted;
+      current += c;
+    } else if (c == ',' && !quoted) {
+      fields.push_back(current);
+      current.clear();
+    } else {
+      current += c;
+    }
+  }
+  fields.push_back(current);
+  return fields;
+}
+
+// cmd_vy_mps is column 21 after the pulse columns were added to the header.
+bool cmdRowsHaveZeroVy(const std::string& csv) {
+  std::istringstream stream(csv);
+  std::string line;
+  int cmd_rows = 0;
+  bool all_zero = true;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 21 || fields[2] != "cmd") {
+      continue;
+    }
+    ++cmd_rows;
+    try {
+      if (std::abs(std::stod(fields[21])) > 1e-12) {
+        all_zero = false;
+      }
+    } catch (...) {
+      all_zero = false;
+    }
+  }
+  return cmd_rows > 0 && all_zero;
+}
+
+bool cmdRowsHaveTarget(const std::string& csv, double x, double y) {
+  std::istringstream stream(csv);
+  std::string line;
+  int cmd_rows = 0;
+  bool all_match = true;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 14 || fields[2] != "cmd") {
+      continue;
+    }
+    ++cmd_rows;
+    try {
+      if (std::abs(std::stod(fields[9]) - x) > 1e-6 ||
+          std::abs(std::stod(fields[10]) - y) > 1e-6) {
+        all_match = false;
+      }
+    } catch (...) {
+      all_match = false;
+    }
+  }
+  return cmd_rows > 0 && all_match;
+}
+
+bool taskStartPulseFields(const std::string& csv, double* vx, double* duration) {
+  std::istringstream stream(csv);
+  std::string line;
+  while (std::getline(stream, line)) {
+    const std::vector<std::string> fields = splitCsvLine(line);
+    if (fields.size() <= 31 || fields[3] != "pulse" ||
+        fields[2] != "event" || fields[31] != "task_start") {
+      continue;
+    }
+    try {
+      *vx = std::stod(fields[15]);
+      *duration = std::stod(fields[16]);
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+  return false;
+}
+
 class FakeBackend final : public g::Backend {
  public:
   FakeBackend() {
@@ -65,6 +151,10 @@ class FakeBackend final : public g::Backend {
     last_vx = vx;
     last_vy = vy;
     last_vyaw = vyaw;
+    if (std::abs(vy) > 1e-12) {
+      ++nonzero_vy_calls;
+    }
+    max_abs_vyaw = std::max(max_abs_vyaw, std::abs(static_cast<double>(vyaw)));
     if (stale_after_moves >= 0 && move_calls >= stale_after_moves) {
       state.age_s = g::kMaxStateAgeS + 0.2;
     }
@@ -97,9 +187,11 @@ class FakeBackend final : public g::Backend {
   bool stop_throws = false;
   int move_calls = 0;
   int stop_calls = 0;
+  int nonzero_vy_calls = 0;
   double last_vx = 0.0;
   double last_vy = 0.0;
   double last_vyaw = 0.0;
+  double max_abs_vyaw = 0.0;
   std::string error;
 };
 
@@ -185,6 +277,13 @@ int run(Case& test_case) {
   return test_case.exit_code;
 }
 
+void checkNoLateral(const Case& test_case, const std::string& name) {
+  check(test_case.backend.nonzero_vy_calls == 0,
+        name + " backend nonzero vy");
+  check(cmdRowsHaveZeroVy(test_case.csv.str()),
+        name + " csv cmd_vy zero");
+}
+
 void testTransforms() {
   const int before = failures;
   g::Origin origin;
@@ -222,17 +321,6 @@ void testTransforms() {
   checkNear(local.x, 0.0, "local pose left x");
   checkNear(local.y, 1.0, "local pose left y");
 
-  state.position = {1.0, 2.0, 0.30};
-  g::BodyError error = g::computeBodyError(state, 1.0, 3.0);
-  checkNear(error.forward, 1.0, "body error forward forward");
-  checkNear(error.left, 0.0, "body error forward left");
-  checkNear(error.distance, 1.0, "body error forward distance");
-
-  error = g::computeBodyError(state, 0.0, 2.0);
-  checkNear(error.forward, 0.0, "body error left forward");
-  checkNear(error.left, 1.0, "body error left left");
-  checkNear(error.distance, 1.0, "body error left distance");
-
   std::cout << (failures == before ? "PASS" : "FAIL") << " transforms\n";
 }
 
@@ -267,6 +355,14 @@ void testParseCommand() {
   check(command.type == g::CommandType::Goto, "parse goto type");
   checkNear(command.x, 1.5, "parse goto x");
   checkNear(command.y, -2.5, "parse goto y");
+  command = g::parseCommand("plan 1.5 -2.5");
+  check(command.type == g::CommandType::Plan, "parse plan type");
+  checkNear(command.x, 1.5, "parse plan forward");
+  checkNear(command.y, -2.5, "parse plan left");
+  command = g::parseCommand("pulse 0.20 0.30");
+  check(command.type == g::CommandType::Pulse, "parse pulse type");
+  checkNear(command.pulse_vx_mps, 0.20, "parse pulse vx");
+  checkNear(command.pulse_duration_s, 0.30, "parse pulse duration");
   command = g::parseCommand("yaw 90");
   check(command.type == g::CommandType::Yaw, "parse yaw type");
   checkNear(command.angle_deg, 90.0, "parse yaw angle");
@@ -275,6 +371,14 @@ void testParseCommand() {
         "parse goto missing arg");
   check(g::parseCommand("goto a b").type == g::CommandType::Invalid,
         "parse goto bad number");
+  check(g::parseCommand("plan 1").type == g::CommandType::Invalid,
+        "parse plan missing arg");
+  check(g::parseCommand("plan a b").type == g::CommandType::Invalid,
+        "parse plan bad number");
+  check(g::parseCommand("pulse 0.2").type == g::CommandType::Invalid,
+        "parse pulse missing arg");
+  check(g::parseCommand("pulse a b").type == g::CommandType::Invalid,
+        "parse pulse bad number");
   check(g::parseCommand("yaw a").type == g::CommandType::Invalid,
         "parse yaw bad number");
   check(g::parseCommand("unknown").type == g::CommandType::Invalid,
@@ -306,6 +410,7 @@ void testStraightPreserved() {
         "straight CSV completed");
   check(csv.find("QUIT") != std::string::npos, "straight CSV quit");
   check(noCmdAfter(csv, "stop_request"), "straight no cmd after stop");
+  checkNoLateral(test_case, "straight");
   std::cout << (failures == before ? "PASS" : "FAIL") << " straight_preserved\n";
 }
 
@@ -327,6 +432,7 @@ void testGotoForwardAndStop() {
   checkNear(test_case.backend.last_vyaw, 0.0, "goto forward vyaw");
   check(csv.find("STOPPED") != std::string::npos, "goto CSV stopped");
   check(noCmdAfter(csv, "stop_request"), "goto no cmd after stop");
+  checkNoLateral(test_case, "goto_forward");
   std::cout << (failures == before ? "PASS" : "FAIL") << " goto_forward_stop\n";
 }
 
@@ -339,9 +445,10 @@ void testGotoLeft() {
   test_case.script.add(0.6, "stop");
   test_case.script.add(1.0, "quit");
   run(test_case);
-  checkNear(test_case.backend.last_vx, 0.0, "goto left vx");
-  checkNear(test_case.backend.last_vy, 0.30, "goto left vy");
-  checkNear(test_case.backend.last_vyaw, 0.0, "goto left vyaw");
+  checkNear(test_case.backend.last_vy, 0.0, "goto left vy is zero");
+  check(test_case.backend.max_abs_vyaw > 0.0,
+        "goto left turns instead of lateral motion");
+  checkNoLateral(test_case, "goto_left");
   std::cout << (failures == before ? "PASS" : "FAIL") << " goto_left\n";
 }
 
@@ -357,8 +464,286 @@ void testGotoApproachFloor() {
   checkNear(test_case.backend.last_vx, 0.30,
             "goto approach floor keeps vx at 0.30");
   checkNear(test_case.backend.last_vy, 0.0, "goto approach floor vy");
+  checkNoLateral(test_case, "goto_approach_floor");
   std::cout << (failures == before ? "PASS" : "FAIL")
             << " goto_approach_floor\n";
+}
+
+void testPulseBoundsAndTiming() {
+  const int before = failures;
+
+  // 0.1 s pulse: one Move at t=0.1, then StopMove.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "pulse 0.20 0.1");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.backend.move_calls == 1, "pulse 0.1 s sends one Move");
+    checkNear(test_case.backend.last_vx, 0.20, "pulse 0.1 s vx");
+    checkNear(test_case.backend.last_vy, 0.0, "pulse 0.1 s vy");
+    checkNear(test_case.backend.last_vyaw, 0.0, "pulse 0.1 s vyaw");
+    check(test_case.backend.stop_calls == 2, "pulse 0.1 s stop + quit");
+    check(csv.find(",pulse,") != std::string::npos, "pulse CSV task");
+    check(csv.find("COMPLETED") != std::string::npos,
+          "pulse CSV completed");
+    check(noCmdAfter(csv, "stop_request"), "pulse no cmd after stop");
+    double vx = 0.0;
+    double duration = 0.0;
+    check(taskStartPulseFields(csv, &vx, &duration),
+          "pulse CSV start fields present");
+    checkNear(vx, 0.20, "pulse CSV vx field");
+    checkNear(duration, 0.1, "pulse CSV duration field");
+    checkNoLateral(test_case, "pulse_0.1");
+  }
+
+  // 0.5 s pulse: five 10 Hz Move calls, then StopMove.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "pulse 0.20 0.5");
+    test_case.script.add(2.0, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 5, "pulse 0.5 s sends five Moves");
+    checkNear(test_case.backend.last_vx, 0.20, "pulse 0.5 s vx");
+    check(test_case.backend.stop_calls == 2, "pulse 0.5 s stop + quit");
+    checkNoLateral(test_case, "pulse_0.5");
+  }
+
+  // Bounds are inclusive; values outside are rejected without a Move.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "pulse 0.05 0.1");
+    test_case.script.add(0.6, "stop");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 1, "pulse lower bounds accepted");
+    checkNear(test_case.backend.last_vx, 0.05, "pulse lower vx");
+    checkNoLateral(test_case, "pulse_lower_bounds");
+  }
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "pulse 0.50 0.5");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 5, "pulse upper bounds accepted");
+    checkNear(test_case.backend.last_vx, 0.50, "pulse upper vx");
+    checkNoLateral(test_case, "pulse_upper_bounds");
+  }
+
+  auto run_rejected = [&](const std::string& command,
+                          const std::string& marker) {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, command);
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 0,
+          command + " rejected without Move");
+    check(test_case.csv.str().find(marker) != std::string::npos,
+          command + " rejection marker");
+  };
+  run_rejected("pulse 0.049 0.1", "pulse_vx_range");
+  run_rejected("pulse 0.501 0.1", "pulse_vx_range");
+  run_rejected("pulse 0.20 0.099", "pulse_duration_range");
+  run_rejected("pulse 0.20 0.501", "pulse_duration_range");
+
+  // Pulse requires origin and a fresh state.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.1, "pulse 0.20 0.1");
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 0, "pulse without origin rejected");
+    check(test_case.csv.str().find("origin_unset") != std::string::npos,
+          "pulse without origin marker");
+  }
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "pulse 0.20 0.1", [&test_case] {
+      test_case.backend.state.age_s = g::kMaxStateAgeS + 0.1;
+    });
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 0, "pulse stale state rejected");
+    check(test_case.csv.str().find("state_stale") != std::string::npos,
+          "pulse stale state marker");
+  }
+
+  // A failed StopMove latches and rejects the next pulse.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.backend.stop_return = 3104;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "pulse 0.20 0.1");
+    test_case.script.add(1.0, "pulse 0.20 0.1");
+    test_case.script.add(1.5, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.backend.move_calls == 1,
+          "pulse stop failure latch no extra Move");
+    check(test_case.session_state.stop_failed,
+          "pulse stop failure latch state");
+    check(test_case.exit_code == 3, "pulse stop failure exit 3");
+    check(csv.find("terminal_rejected,stop_failed") != std::string::npos,
+          "pulse stop failure CSV rejection");
+    check(csv.find("QUIT_STOP_FAILED") != std::string::npos,
+          "pulse stop failure end event");
+    checkNoLateral(test_case, "pulse_stop_failure");
+  }
+
+  std::cout << (failures == before ? "PASS" : "FAIL")
+            << " pulse_bounds_timing\n";
+}
+
+void testPlanAndGotoNavigation() {
+  const int before = failures;
+
+  // plan target is fixed at command time; changing the current heading later
+  // must not move the stored target.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 1 0");
+    test_case.script.add(0.2, "status", [&test_case] {
+      test_case.backend.state.yaw_rad = g::kPi / 2.0;
+    });
+    test_case.script.add(0.6, "stop");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(cmdRowsHaveTarget(csv, 1.0, 0.0),
+          "plan target stays fixed after turn");
+    check(noCmdAfter(csv, "stop_request"), "plan no cmd after stop");
+    checkNoLateral(test_case, "plan_target_fixed");
+  }
+
+  // goto keeps its initial-origin fixed-point semantics but uses the same
+  // path + Pure Pursuit control law.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "goto 1 0");
+    test_case.script.add(0.2, "status", [&test_case] {
+      test_case.backend.state.yaw_rad = g::kPi / 2.0;
+    });
+    test_case.script.add(0.6, "stop");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(cmdRowsHaveTarget(csv, 1.0, 0.0),
+          "goto target stays fixed after turn");
+    checkNoLateral(test_case, "goto_target_fixed");
+  }
+
+  // A side target must turn and move forward, never translate sideways.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 0 1");
+    test_case.script.add(0.6, "stop");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls > 0, "plan side sends Moves");
+    checkNear(test_case.backend.last_vy, 0.0, "plan side last vy zero");
+    check(test_case.backend.max_abs_vyaw > 0.0,
+          "plan side uses yaw instead of lateral motion");
+    checkNoLateral(test_case, "plan_side");
+  }
+
+  // Target already inside tolerance: arrival without a Move.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 0.01 0");
+    test_case.script.add(0.5, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.backend.move_calls == 0,
+          "plan inside tolerance sends no Move");
+    check(test_case.backend.stop_calls == 2,
+          "plan inside tolerance arrival + quit stop");
+    check(csv.find("ARRIVED") != std::string::npos,
+          "plan inside tolerance ARRIVED");
+  }
+
+  // Distance caps reject before a task starts.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 3.1 0");
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 0, "plan distance cap no Move");
+    check(test_case.csv.str().find("plan_distance_cap") != std::string::npos,
+          "plan distance cap marker");
+  }
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "goto 3.1 0");
+    test_case.script.add(0.6, "quit");
+    run(test_case);
+    check(test_case.backend.move_calls == 0, "goto distance cap no Move");
+    check(test_case.csv.str().find("goto_distance_cap") != std::string::npos,
+          "goto distance cap marker");
+  }
+
+  std::cout << (failures == before ? "PASS" : "FAIL")
+            << " plan_goto_navigation\n";
+}
+
+void testPlanTimeoutAndStateStale() {
+  const int before = failures;
+
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 1 0");
+    test_case.script.add(31.0, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(test_case.backend.move_calls > 250, "plan timeout many Moves");
+    check(test_case.backend.stop_calls == 2, "plan timeout stop + quit");
+    check(csv.find("TIMEOUT") != std::string::npos, "plan timeout CSV");
+    checkNoLateral(test_case, "plan_timeout");
+  }
+
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.backend.stale_after_moves = 1;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 1 0");
+    test_case.script.add(1.0, "quit");
+    run(test_case);
+    check(test_case.csv.str().find("STATE_STALE") != std::string::npos,
+          "plan state stale CSV");
+    check(test_case.backend.stop_calls == 2, "plan state stale stop + quit");
+    checkNoLateral(test_case, "plan_state_stale");
+  }
+
+  std::cout << (failures == before ? "PASS" : "FAIL")
+            << " plan_timeout_state_stale\n";
 }
 
 void testYawWrap() {
@@ -398,6 +783,7 @@ void testArrivalStops() {
   check(csv.find("ARRIVED") != std::string::npos, "arrival CSV ARRIVED");
   check(countOccurrences(csv, ",cmd,") == 1, "arrival one cmd row");
   check(noCmdAfter(csv, "stop_request"), "arrival no cmd after stop");
+  checkNoLateral(test_case, "arrival");
   std::cout << (failures == before ? "PASS" : "FAIL") << " arrival_stop\n";
 }
 
@@ -413,6 +799,7 @@ void testTimeoutStops() {
   check(test_case.backend.move_calls > 250, "timeout many Move calls");
   check(test_case.backend.stop_calls == 2, "timeout stop + quit stop");
   check(csv.find("TIMEOUT") != std::string::npos, "timeout CSV TIMEOUT");
+  checkNoLateral(test_case, "timeout");
   std::cout << (failures == before ? "PASS" : "FAIL") << " timeout_stop\n";
 }
 
@@ -706,6 +1093,9 @@ int main() {
   testGotoForwardAndStop();
   testGotoLeft();
   testGotoApproachFloor();
+  testPulseBoundsAndTiming();
+  testPlanAndGotoNavigation();
+  testPlanTimeoutAndStateStale();
   testYawWrap();
   testArrivalStops();
   testTimeoutStops();

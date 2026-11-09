@@ -17,6 +17,13 @@ target_include_directories(go2_native_motion_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(go2_native_motion_core PRIVATE -Wall -Wextra)
 
+# Path/Pure Pursuit is a standard-library-only offline module. Its own demos
+# are built only in the standalone plan tree, not in the native tool tree.
+set(GO2_NAV_PLAN_BUILD_DEMOS OFF)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../go2_nav_plan"
+                 "${CMAKE_CURRENT_BINARY_DIR}/go2_nav_plan")
+target_link_libraries(go2_native_motion_core PUBLIC go2_nav_plan)
+
 add_executable(go2_native_motion_selftest selftest.cpp)
 target_link_libraries(go2_native_motion_selftest PRIVATE go2_native_motion_core)
 target_compile_options(go2_native_motion_selftest PRIVATE -Wall -Wextra)
@@ -56,9 +63,9 @@ if(NOT _go2_real_robot_mode STREQUAL "OFF")
       "For an offline-only build use -DGO2_REAL_ROBOT=OFF.")
   else()
     message(STATUS
-      "unitree_sdk2 not found: only the offline core and selftest will be built. "
-      "Real-robot executables were NOT built. Use -DUNITREE_SDK2_ROOT=... and "
-      "-DGO2_REAL_ROBOT=ON to require them.")
+      "unitree_sdk2 not found: only the offline core, plan and selftest targets "
+      "will be built. Real-robot executables were NOT built. Use "
+      "-DUNITREE_SDK2_ROOT=... and -DGO2_REAL_ROBOT=ON to require them.")
   endif()
 endif()
 
@@ -76,5 +83,5 @@ if(_go2_build_real_robot)
     "Building real-robot entries: go2_native_motion, go2_native_readonly_query")
 else()
   message(STATUS
-    "Real-robot entries not built; only go2_native_motion_selftest is available.")
+    "Real-robot entries not built; offline core, plan and selftest targets only.")
 endif()

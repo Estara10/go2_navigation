@@ -146,13 +146,15 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     fields.push_back("");
   }
 
-  if (context.task != nullptr && context.task->type == TaskType::Goto) {
+  if (context.task != nullptr &&
+      (context.task->type == TaskType::Goto ||
+       context.task->type == TaskType::Plan)) {
     fields.push_back(number(context.task->target_local_x, 6));
     fields.push_back(number(context.task->target_local_y, 6));
-    fields.push_back("");
+    fields.push_back(number(context.task->target_local_yaw_deg, 6));
     fields.push_back(number(context.task->target_native_x, 6));
     fields.push_back(number(context.task->target_native_y, 6));
-    fields.push_back("");
+    fields.push_back(number(context.task->target_native_yaw, 6));
   } else if (context.task != nullptr &&
              context.task->type == TaskType::Yaw) {
     fields.push_back("");
@@ -165,6 +167,14 @@ void writeRow(std::ostream& csv, double mono_s, const char* type,
     for (int i = 0; i < 6; ++i) {
       fields.push_back("");
     }
+  }
+
+  if (context.task != nullptr && context.task->type == TaskType::Pulse) {
+    fields.push_back(number(context.task->pulse_vx_mps, 6));
+    fields.push_back(number(context.task->pulse_duration_s, 6));
+  } else {
+    fields.push_back("");
+    fields.push_back("");
   }
 
   if (context.origin != nullptr && context.origin->set &&
@@ -314,6 +324,24 @@ Command parseCommand(const std::string& line) {
       command.x = x;
       command.y = y;
     }
+  } else if (tokens.size() == 3 && name == "plan") {
+    double forward = 0.0;
+    double left = 0.0;
+    if (parseFiniteDouble(tokens[1], forward) &&
+        parseFiniteDouble(tokens[2], left)) {
+      command.type = CommandType::Plan;
+      command.x = forward;
+      command.y = left;
+    }
+  } else if (tokens.size() == 3 && name == "pulse") {
+    double vx = 0.0;
+    double duration = 0.0;
+    if (parseFiniteDouble(tokens[1], vx) &&
+        parseFiniteDouble(tokens[2], duration)) {
+      command.type = CommandType::Pulse;
+      command.pulse_vx_mps = vx;
+      command.pulse_duration_s = duration;
+    }
   } else if (tokens.size() == 2 && name == "yaw") {
     double angle = 0.0;
     if (parseFiniteDouble(tokens[1], angle)) {
@@ -336,8 +364,12 @@ const char* commandName(CommandType type) {
       return "origin";
     case CommandType::Straight:
       return "straight";
+    case CommandType::Pulse:
+      return "pulse";
     case CommandType::Goto:
       return "goto";
+    case CommandType::Plan:
+      return "plan";
     case CommandType::Yaw:
       return "yaw";
     case CommandType::Stop:
@@ -354,8 +386,12 @@ const char* taskName(TaskType type) {
       return "none";
     case TaskType::Straight:
       return "straight";
+    case TaskType::Pulse:
+      return "pulse";
     case TaskType::Goto:
       return "goto";
+    case TaskType::Plan:
+      return "plan";
     case TaskType::Yaw:
       return "yaw";
   }
@@ -418,24 +454,12 @@ void localToNative(const Origin& origin, double local_x, double local_y,
   }
 }
 
-BodyError computeBodyError(const StateSnapshot& state, double target_native_x,
-                           double target_native_y) {
-  BodyError error;
-  const double ex = target_native_x - state.position[0];
-  const double ey = target_native_y - state.position[1];
-  const double c = std::cos(state.yaw_rad);
-  const double s = std::sin(state.yaw_rad);
-  error.forward = c * ex + s * ey;
-  error.left = -s * ex + c * ey;
-  error.distance = std::hypot(ex, ey);
-  return error;
-}
-
 void writeCsvHeader(std::ostream& csv) {
   csv << "wall_time_utc,mono_s,record_type,task,state_seq,state_age_s,"
          "origin_native_x,origin_native_y,origin_native_yaw,"
          "target_local_x,target_local_y,target_local_yaw_deg,"
          "target_native_x,target_native_y,target_native_yaw,"
+         "pulse_vx_mps,pulse_duration_s,"
          "local_pos_x,local_pos_y,local_heading_deg,"
          "cmd_vx_mps,cmd_vy_mps,cmd_vyaw_radps,"
          "native_pos_x,native_pos_y,native_pos_z,"
@@ -510,26 +534,35 @@ int runInteractiveSession(const Config& config, Backend& backend,
 
   log << "本次 straight 参数: vx=" << config.vx_mps << " m/s, duration="
       << config.duration_s << " s（vy=0, vyaw=0；10 Hz 重发）\n";
-  log << "允许范围: vx<=" << kMaxVxMps << " m/s, duration<="
+  log << "straight 允许范围: vx<=" << kMaxVxMps << " m/s, duration<="
       << kMaxDurationS << " s；实际速度与距离不作保证。\n";
-  log << "goto 参数: vmax=" << config.goto_max_speed_mps
+  log << "pulse 允许范围: vx " << kMinVxMps << "-" << kMaxVxMps
+      << " m/s, duration " << kPulseMinDurationS << "-" << kPulseMaxDurationS
+      << " s；实际位移包含指令延迟和停车距离，不能按 vx*duration 估算。\n";
+  log << "plan/goto 参数: vmax=" << config.goto_max_speed_mps
       << " m/s, approach=" << config.goto_approach_speed_mps
       << " m/s（approach 为首轮防失速候选，不是已验证的硬件最低速度）\n";
-  log << "goto 位置容差=" << kPositionToleranceM
-      << " m（原生估计到达判据，不保证实际到点精度）\n";
+  log << "plan/goto 位置容差=" << kPositionToleranceM
+      << " m（原生估计到达判据，不保证实际到点精度）；"
+         "正常运动只发送 vx/vyaw，vy 固定为 0。\n";
 
   auto printHelp = [&]() {
-    log << "命令: status | origin | straight | goto x y | yaw deg | stop | "
-           "quit | help\n"
+    log << "命令: status | origin | straight | pulse vx duration | goto x y | "
+           "plan forward left | yaw deg | stop | quit | help\n"
         << "  status        显示位置、航向、速度、状态时龄和当前任务\n"
         << "  origin        确认机器人静止并记录初始位置/航向；本轮只允许一次\n"
-        << "  straight      用 --vx/--duration-s 做上一版短时直走（当前机体系前方）\n"
-        << "  goto x y      到初始坐标系中的固定点，单位 m\n"
-        << "  yaw deg       转到相对初始朝向的角度，单位 deg\n"
+        << "  straight      用 --vx/--duration-s 做短时直走（当前机体系前方）\n"
+        << "  pulse vx dur  短脉冲：vx " << kMinVxMps << "-" << kMaxVxMps
+        << " m/s，duration " << kPulseMinDurationS << "-"
+        << kPulseMaxDurationS << " s；到期立即 StopMove\n"
+        << "  goto x y      到初始坐标系中的固定点，用路径+Pure Pursuit 跟踪\n"
+        << "  plan f l      按当前机头方向指定相对目标（前 f、左 l），一次固定\n"
+        << "  yaw deg       原地转到相对初始朝向的角度，单位 deg\n"
         << "  stop          终止当前任务并调用 StopMove\n"
         << "  quit          停止后退出\n"
         << "普通命令按 Enter 执行；Ctrl+C 立即中断，不需要 Enter。\n"
-        << "运动中可输入 status/stop/quit；新的 goto/yaw/straight 需先 stop。\n";
+        << "正常运动只使用 vx/vyaw，vy 固定为 0；不再侧移。\n"
+        << "运动中可输入 status/stop/quit；新的运动命令需先 stop。\n";
   };
 
   log << "本地坐标: 起点=(0,0), 初始前方=+X, 左侧=+Y, 初始朝向=0°, "
@@ -541,11 +574,12 @@ int runInteractiveSession(const Config& config, Backend& backend,
   auto printStatus = [&]() {
     state = backend.snapshot();
     log << "task=" << taskName(task.type);
-    if (task.type == TaskType::Goto) {
+    if (task.type == TaskType::Goto || task.type == TaskType::Plan) {
       log << " target_local=(" << task.target_local_x << ","
           << task.target_local_y << ") target_native=("
           << task.target_native_x << "," << task.target_native_y
-          << ") vmax=" << config.goto_max_speed_mps
+          << ") path_len=" << task.path.length()
+          << " vmax=" << config.goto_max_speed_mps
           << " approach=" << config.goto_approach_speed_mps;
     } else if (task.type == TaskType::Yaw) {
       log << " target_local_yaw=" << task.target_local_yaw_deg
@@ -553,6 +587,9 @@ int runInteractiveSession(const Config& config, Backend& backend,
     } else if (task.type == TaskType::Straight) {
       log << " duration=" << task.straight_duration_s
           << " s vx=" << task.straight_vx_mps << " m/s";
+    } else if (task.type == TaskType::Pulse) {
+      log << " vx=" << task.pulse_vx_mps
+          << " m/s duration=" << task.pulse_duration_s << " s";
     }
     log << "\n";
 
@@ -685,6 +722,58 @@ int runInteractiveSession(const Config& config, Backend& backend,
     log << "运动中命令> " << std::flush;
   };
 
+  auto purePursuitRadius = [&]() {
+    return std::max(1e-3,
+                    config.goto_max_speed_mps /
+                        std::max(kMaxYawRateRadps, 1e-6));
+  };
+
+  // Builds a fixed-local-target task with a one-time path. The path starts at
+  // the base_link pose at command time and ends at (target_x, target_y).
+  auto makeNavigationTask = [&](TaskType type, double target_x,
+                                double target_y) {
+    const LocalPose local = toLocalPose(state, origin);
+    const double dx = target_x - local.x;
+    const double dy = target_y - local.y;
+    const double distance = std::hypot(dx, dy);
+    const double goal_yaw =
+        distance > 1e-9 ? std::atan2(dy, dx) : local.heading;
+
+    Task new_task;
+    new_task.type = type;
+    new_task.target_local_x = target_x;
+    new_task.target_local_y = target_y;
+    new_task.target_local_yaw_deg = goal_yaw * 180.0 / kPi;
+    localToNative(origin, target_x, target_y, &new_task.target_native_x,
+                  &new_task.target_native_y);
+    new_task.target_native_yaw = wrapPi(origin.native_yaw + goal_yaw);
+    new_task.timeout_s = kGotoTimeoutS;
+
+    const go2_nav::Pose2D start{local.x, local.y, local.heading};
+    const go2_nav::Pose2D goal{target_x, target_y, goal_yaw};
+    new_task.path = go2_nav::makePath(start, goal, purePursuitRadius());
+    return new_task;
+  };
+
+  auto startNavigationTask = [&](TaskType type, double target_x,
+                                 double target_y, const std::string& prefix) {
+    Task new_task = makeNavigationTask(type, target_x, target_y);
+    const LocalPose local = toLocalPose(state, origin);
+    const double distance = std::hypot(target_x - local.x,
+                                       target_y - local.y);
+    if (distance <= kPositionToleranceM || new_task.path.empty()) {
+      log << "目标已在 " << kPositionToleranceM
+          << " m 容差内或路径为空；按到达处理，不发送 Move。\n";
+    }
+    startTask(new_task,
+              prefix + "local=(" + number(target_x, 3) + "," +
+                  number(target_y, 3) + ") native=(" +
+                  number(new_task.target_native_x, 3) + "," +
+                  number(new_task.target_native_y, 3) + ") path_len=" +
+                  number(new_task.path.length(), 3) + " radius=" +
+                  number(purePursuitRadius(), 3) + " vy=0");
+  };
+
   auto handleOrigin = [&]() {
     if (task.type != TaskType::None) {
       log << "任务中不能记录起点；先 stop。\n";
@@ -781,6 +870,37 @@ int runInteractiveSession(const Config& config, Backend& backend,
           show_prompt = false;
           break;
         }
+        case CommandType::Pulse: {
+          if (!canStart()) {
+            break;
+          }
+          if (command.pulse_vx_mps < kMinVxMps ||
+              command.pulse_vx_mps > kMaxVxMps) {
+            log << "pulse vx " << command.pulse_vx_mps << " m/s 超出范围 ["
+                << kMinVxMps << ", " << kMaxVxMps
+                << "]；未发送运动。\n";
+            writeEvent("terminal_rejected", "pulse_vx_range");
+            break;
+          }
+          if (command.pulse_duration_s < kPulseMinDurationS ||
+              command.pulse_duration_s > kPulseMaxDurationS) {
+            log << "pulse duration " << command.pulse_duration_s
+                << " s 超出范围 [" << kPulseMinDurationS << ", "
+                << kPulseMaxDurationS << "]；未发送运动。\n";
+            writeEvent("terminal_rejected", "pulse_duration_range");
+            break;
+          }
+          Task new_task;
+          new_task.type = TaskType::Pulse;
+          new_task.pulse_vx_mps = command.pulse_vx_mps;
+          new_task.pulse_duration_s = command.pulse_duration_s;
+          startTask(new_task,
+                    "vx=" + number(command.pulse_vx_mps, 3) +
+                        " duration=" + number(command.pulse_duration_s, 3) +
+                        " vy=0 vyaw=0");
+          show_prompt = false;
+          break;
+        }
         case CommandType::Goto: {
           if (!canStart()) {
             break;
@@ -792,22 +912,31 @@ int runInteractiveSession(const Config& config, Backend& backend,
             writeEvent("terminal_rejected", "goto_distance_cap");
             break;
           }
-          Task new_task;
-          new_task.type = TaskType::Goto;
-          new_task.target_local_x = command.x;
-          new_task.target_local_y = command.y;
-          localToNative(origin, command.x, command.y,
-                        &new_task.target_native_x,
-                        &new_task.target_native_y);
-          new_task.timeout_s = kGotoTimeoutS;
-          startTask(new_task,
-                    "local=(" + number(command.x, 3) + "," +
-                        number(command.y, 3) + ") native=(" +
-                        number(new_task.target_native_x, 3) + "," +
-                        number(new_task.target_native_y, 3) +
-                        ") vmax=" + number(config.goto_max_speed_mps, 3) +
-                        " approach=" +
-                        number(config.goto_approach_speed_mps, 3));
+          startNavigationTask(TaskType::Goto, command.x, command.y,
+                              "fixed_local=(" + number(command.x, 3) + "," +
+                                  number(command.y, 3) + ") ");
+          show_prompt = false;
+          break;
+        }
+        case CommandType::Plan: {
+          if (!canStart()) {
+            break;
+          }
+          const double distance = std::hypot(command.x, command.y);
+          if (distance > kMaxGotoDistanceM) {
+            log << "plan 相对距离 " << distance << " m 超过上限 "
+                << kMaxGotoDistanceM << " m；未启动。\n";
+            writeEvent("terminal_rejected", "plan_distance_cap");
+            break;
+          }
+          const LocalPose local = toLocalPose(state, origin);
+          const double c = std::cos(local.heading);
+          const double s = std::sin(local.heading);
+          const double target_x = local.x + c * command.x - s * command.y;
+          const double target_y = local.y + s * command.x + c * command.y;
+          startNavigationTask(TaskType::Plan, target_x, target_y,
+                              "relative=(" + number(command.x, 3) + "," +
+                                  number(command.y, 3) + ") ");
           show_prompt = false;
           break;
         }
@@ -889,24 +1018,65 @@ int runInteractiveSession(const Config& config, Backend& backend,
           vx = task.straight_vx_mps;
         }
         break;
-      case TaskType::Goto: {
-        const BodyError error = computeBodyError(
-            state, task.target_native_x, task.target_native_y);
-        if (error.distance <= kPositionToleranceM) {
+      case TaskType::Pulse:
+        if (elapsed + kScheduleEpsilonS >= task.pulse_duration_s) {
+          done = true;
+          end_reason = TaskEndReason::Completed;
+        } else {
+          vx = task.pulse_vx_mps;
+        }
+        break;
+      case TaskType::Goto:
+      case TaskType::Plan: {
+        const LocalPose local = toLocalPose(state, origin);
+        const double dx = task.target_local_x - local.x;
+        const double dy = task.target_local_y - local.y;
+        const double distance = std::hypot(dx, dy);
+
+        if (task.path.empty() || distance <= kPositionToleranceM) {
+          if (task.path.empty() && distance > kPositionToleranceM) {
+            log << "路径为空；按到达处理（位置误差 " << distance
+                << " m），未发送运动。\n";
+          }
           done = true;
           end_reason = TaskEndReason::Arrived;
         } else if (elapsed + kScheduleEpsilonS >= task.timeout_s) {
           done = true;
           end_reason = TaskEndReason::Timeout;
         } else {
-          double speed = std::min(kPositionGain * error.distance,
-                                  config.goto_max_speed_mps);
-          // 防失速下限：首轮候选值，不是已验证的硬件最低速度。
-          if (speed < config.goto_approach_speed_mps) {
-            speed = config.goto_approach_speed_mps;
+          // The native SportModeState velocity frame is not verified for
+          // control; only local position and heading feed the tracker.
+          go2_nav::BodyState body;
+          body.stamp_s = runtime.now_s();
+          body.position_m = go2_nav::Vec3{local.x, local.y, 0.0};
+          body.yaw_rad = local.heading;
+          body.velocity_mps = go2_nav::Vec2{0.0, 0.0};
+          body.yaw_rate_radps = 0.0;
+          body.valid = isFresh(state);
+
+          go2_nav::PurePursuitConfig track_config;
+          track_config.max_speed_mps = config.goto_max_speed_mps;
+          track_config.min_speed_mps = config.goto_approach_speed_mps;
+          track_config.max_yaw_rate_radps = kMaxYawRateRadps;
+          track_config.stop_distance_m = kPositionToleranceM;
+          track_config.goal_tolerance_m = kPositionToleranceM;
+          go2_nav::PurePursuit tracker(track_config);
+          const go2_nav::VelocityCommand tracker_command =
+              tracker.compute(body, task.path, task.tracker_state);
+
+          if (tracker_command.stop_request) {
+            done = true;
+            end_reason = distance <= kPositionToleranceM
+                             ? TaskEndReason::Arrived
+                             : TaskEndReason::Timeout;
+            if (end_reason == TaskEndReason::Timeout) {
+              log << "Pure Pursuit 路径结束但位置误差 " << distance
+                  << " m 超过容差，按未到达停止。\n";
+            }
+          } else {
+            vx = tracker_command.vx_mps;
+            vyaw = tracker_command.vyaw_radps;
           }
-          vx = speed * error.forward / error.distance;
-          vy = speed * error.left / error.distance;
         }
         break;
       }
@@ -934,6 +1104,9 @@ int runInteractiveSession(const Config& config, Backend& backend,
       performStop(end_reason, true);
       continue;
     }
+
+    // A1 boundary: normal motion only uses forward vx and yaw vyaw.
+    vy = 0.0;
 
     const double control_time = runtime.now_s();
     if (control_time + kScheduleEpsilonS < next_control) {

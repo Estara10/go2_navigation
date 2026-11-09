@@ -7,6 +7,9 @@
 #include <iosfwd>
 #include <string>
 
+#include "path.hpp"
+#include "pure_pursuit.hpp"
+
 namespace go2_native_motion {
 
 inline constexpr double kPi = 3.14159265358979323846;
@@ -16,17 +19,18 @@ inline constexpr double kMinVxMps = 0.05;
 inline constexpr double kMaxVxMps = 0.50;
 inline constexpr double kMinDurationS = 1.0;
 inline constexpr double kMaxDurationS = 30.0;
+inline constexpr double kPulseMinDurationS = 0.1;
+inline constexpr double kPulseMaxDurationS = 0.5;
 inline constexpr double kMovePeriodS = 0.10;
 inline constexpr double kMaxStateAgeS = 0.30;
 inline constexpr double kStartupStateWaitS = 10.0;
 inline constexpr double kSdkCallTimeoutS = 1.0;
 inline constexpr double kCommandPollPeriodS = 0.05;
 
-// goto/yaw 首次试验初值，需现场验证。
+// plan/goto/yaw 首次试验初值，需现场验证。
 inline constexpr double kMaxGotoDistanceM = 3.0;
 inline constexpr double kPositionToleranceM = 0.05;
 inline constexpr double kYawToleranceRad = 5.0 * kPi / 180.0;
-inline constexpr double kPositionGain = 0.8;
 inline constexpr double kYawGain = 1.5;
 inline constexpr double kMinGotoSpeedMps = 0.05;
 inline constexpr double kMaxGotoSpeedMps = 0.50;
@@ -62,7 +66,9 @@ enum class CommandType {
   Status,
   Origin,
   Straight,
+  Pulse,
   Goto,
+  Plan,
   Yaw,
   Stop,
   Quit,
@@ -74,6 +80,8 @@ struct Command {
   double x = 0.0;
   double y = 0.0;
   double angle_deg = 0.0;
+  double pulse_vx_mps = 0.0;
+  double pulse_duration_s = 0.0;
 };
 
 struct Origin {
@@ -86,7 +94,9 @@ struct Origin {
 enum class TaskType {
   None,
   Straight,
+  Pulse,
   Goto,
+  Plan,
   Yaw,
 };
 
@@ -96,24 +106,22 @@ struct Task {
   double timeout_s = 0.0;
   double straight_duration_s = 0.0;
   double straight_vx_mps = 0.0;
+  double pulse_vx_mps = 0.0;
+  double pulse_duration_s = 0.0;
   double target_local_x = 0.0;
   double target_local_y = 0.0;
   double target_local_yaw_deg = 0.0;
   double target_native_x = 0.0;
   double target_native_y = 0.0;
   double target_native_yaw = 0.0;
+  go2_nav::Path path;
+  go2_nav::PurePursuitState tracker_state;
 };
 
 struct LocalPose {
   double x = 0.0;
   double y = 0.0;
   double heading = 0.0;
-};
-
-struct BodyError {
-  double forward = 0.0;
-  double left = 0.0;
-  double distance = 0.0;
 };
 
 enum class TaskEndReason {
@@ -160,8 +168,6 @@ double wrapPi(double angle);
 LocalPose toLocalPose(const StateSnapshot& state, const Origin& origin);
 void localToNative(const Origin& origin, double local_x, double local_y,
                    double* native_x, double* native_y);
-BodyError computeBodyError(const StateSnapshot& state, double target_native_x,
-                           double target_native_y);
 
 void writeCsvHeader(std::ostream& csv);
 int runInteractiveSession(const Config& config, Backend& backend,

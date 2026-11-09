@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-起步阶段。工程已入 GitHub；已有原生运动工具、VINS 候选配置和离线自检。`scripts/go2_nav_core/` 提供机身状态接口，`scripts/go2_nav_plan/` 提供 VINS CSV→`BodyState` 回放、Dubins 路径和 Pure Pursuit 离线原型；当前里程碑是 D435i/VINS 定位下的 A→B 5 cm，实机尚未实现。
+起步阶段。工程已入 GitHub；已有原生运动工具、VINS 候选配置和离线自检。`scripts/go2_nav_core/` 提供机身状态接口，`scripts/go2_nav_plan/` 提供 VINS CSV→`BodyState` 回放、Dubins 路径和 Pure Pursuit 离线原型；原生工具已接入 `pulse`、`plan` 和路径+Pure Pursuit（`vy=0`），但当前用原生 SportModeState 位姿做机制验证。当前里程碑是 D435i/VINS 定位下的 A→B 5 cm，实机尚未实现。
 
 ## 协作方式
 
@@ -15,6 +15,7 @@
 - 2026-11-09：初始化 GitHub 仓库并推送 `main`，提交 `63f3294`，32 个文件。
 - 2026-11-09：T1 机身状态接口与相机 IMU→`base_link` 离线变换；分支 `feat/body-state-interface`，PR #1；模块 `scripts/go2_nav_core/`；接口冻结在 `docs/INTERFACE.md`，测量清单在 `docs/MEASUREMENT_CHECKLIST.md`；离线构建和自检通过；`T_base_cam` 仍为未实测，测试只用合成值。
 - 2026-11-09：用临时外参 `(0.3475, 0, 0.0525)` + 相机光学旋转回放历史 VINS CSV；1341 行全部转换；`base_link` 末帧约 `(1.164, -0.204)` m；最大相邻跳变约 10.5 cm；仍是临时外参，不是 5 cm 证明。
+- 2026-11-09：原生工具接入短脉冲 `pulse` 和 `plan`；`goto` 改为一次生成的路径 + Pure Pursuit，删除侧移控制，所有正常运动 `vy=0`；离线自检、无 SDK/SDK 构建通过。仍是原生日姿机制验证，不是 VINS/5 cm。
 - 工程独立化：目录、文档、去个人路径、构建选项已整理；无 SDK 构建和自检、SDK 构建、`ON` 缺 SDK 失败均有记录。本轮未重跑构建。
 - 原生工具：`Move/StopMove`、10 Hz 重发、状态超时停止、停止失败锁存、CSV、离线自检。
 - VINS：固定提交、补丁、480×270 候选配置、独立构建说明。
@@ -26,6 +27,7 @@
 - 闭环离线测试：相机→机身→Pure Pursuit→理想独轮车，1.0 m 直走最终位置误差约 1.99 cm，停稳，`vy=0`。
 - VINS CSV 回放可用；现场 bag→CSV 提取脚本已在历史 bag 上验证，输出与历史审阅 CSV 逐字节一致。
 - 临时外参 `(0.3475, 0, 0.0525)` + 相机光学旋转能跑通历史数据（1341 行）。
+- 原生工具 `pulse`/`plan`/`goto` 离线自检通过；`straight`、`pulse`、`goto`、`plan` 的 Move 和 CSV `cmd_vy_mps` 均为 0；模拟到达/超时/状态超期/停止失败锁存均通过。
 - 直线/Dubins 路径和 Pure Pursuit 离线模拟可用；A→B 直线和曲线均停稳，位置误差约 2 cm，`vy=0`。
 - 相对目标一次性转换和 `valid` 规则有离线测试。
 - 临时外参放在 `scripts/go2_nav_plan/config/d435i_provisional.conf`，`measured=0`。
@@ -42,10 +44,10 @@
 
 - `base_link` 物理原点未现场确认；`T_base_cam` 未测量。
 - 机身状态接口已接离线 CSV 回放；实时 VINS、传输方式和现场 valid 阈值未定。
-- 旧 `goto` 仍使用首次 `origin` 坐标系并可能侧移；新的相对目标语义只在离线模块中，尚未接入运动工具。
+- 原生工具的 `plan`/`goto` 已改为路径 + Pure Pursuit，`vy=0`；但输入仍是原生 SportModeState 位姿，不是 VINS，实机未验证。
 - 离线已有直线/Dubins + Pure Pursuit；终点航向未控制，实机未验证。
-- VINS 与运动工具尚未联动；单一发送入口尚未整合。
-- 实机 `goto 0.5 0` 未执行；0.30 m/s 连续行走只是用户报告；实际停稳未验证。
+- VINS 与运动工具尚未实时联动；单一发送入口仍是原生工具，VINS 未接入。
+- 实机 `goto 0.5 0`、`pulse`、`plan` 未执行；0.30 m/s 连续行走只是用户报告；实际停稳未验证。
 - 5 cm 未验收。
 
 ## 已知问题与边界
@@ -95,7 +97,7 @@
 - 目标：完成 A→B 的路径生成和跟踪；正前方先走直线，需要转向时用现有 Dubins 实现；跟踪用 Pure Pursuit 或 Nav2 Regulated Pure Pursuit。
 - 交付：路径生成、跟踪器、`VelocityCommand` 输出、离线模拟、A→B 到达测试。
 - 完成：模拟中 A→B 稳定到达；正常跟踪 `vy≈0`；能减速停车；停止后旧任务不恢复。
-- 状态：离线原型已完成；自检通过；模拟 A→B 约 2 cm；实机未验证。
+- 状态：离线原型已完成；自检通过；模拟 A→B 约 2 cm；原生工具已接入路径 + Pure Pursuit；实机未验证。
 - 依赖：T1；可与 M1-0、M1-1 并行。
 - 算法边界：直接复用现有算法和实现，不新写通用规划器；首期不用 TEB/MPC/DWA，它们需要代价地图和较多调参，开阔 A→B 不需要。
 
@@ -104,6 +106,7 @@
 - 目标：把跟踪器的 `VelocityCommand` 接到现有 Go2 工具，保留 10 Hz、状态超时和停止失败锁存。
 - 交付：适配层、离线自检；仍不运行实机。
 - 完成：模拟命令只经过一个发送入口；停止、超时和锁存行为不变。
+- 状态：原生工具已接入 `pulse`/`plan`/`goto` 的路径 + Pure Pursuit，且仍是唯一运动发送入口；输入仍是原生日姿，VINS 未接入；实机未运行。
 - 依赖：M1-2。
 
 ### M1-4 现场 A→B 闭环
@@ -128,7 +131,8 @@
 | 2026-11-09 | 初始化 GitHub 仓库和 README | 完成 | `63f3294` | 32 个文件，未提交 build/logs |
 | 2026-11-09 | 建立状态文档 | 完成 | 待提交 | 本文档 |
 | 2026-11-09 | T1 机身状态接口与离线变换 | 完成（离线） | `feat/body-state-interface`，PR #1 | 自检通过；`T_base_cam` 未实测 |
-| 2026-11-09 | M1-1 离线回放 + M1-2 路径/跟踪原型 | 完成（离线） | 待提交 | VINS CSV→`BodyState`；Dubins + Pure Pursuit；模拟 A→B 约 2 cm；端到端合成通过；临时外参配置；实机未验证 |
+| 2026-11-09 | M1-1 离线回放 + M1-2 路径/跟踪原型 | 完成（离线） | `feat/native-pulse-plan` | VINS CSV→`BodyState`；Dubins + Pure Pursuit；模拟 A→B 约 2 cm；临时外参配置；实机未验证 |
+| 2026-11-09 | M1-3 原生工具脉冲 + 路径跟踪接入 | 完成（离线） | `feat/native-pulse-plan`，PR 待创建 | `pulse`/`plan`；`goto` 改用路径 + PP；`vy=0`；无 SDK/SDK 构建和自检通过；实机未运行 |
 
 ## 更新规则
 

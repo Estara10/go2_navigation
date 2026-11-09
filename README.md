@@ -33,11 +33,12 @@
 ## 当前能力
 
 - 原生 `SportClient.Move/StopMove` 终端工具：10 Hz 重发、状态超时停止、`StopMove` 失败锁存、CSV 记录。
-- `goto x y` / `yaw deg` 是旧工具：目标在首次 `origin` 坐标系中，`goto` 可能使用侧移，不是 A1 的“按当前机头方向下达目标、前进加转向跟踪”。
+- 原生工具已加入 `pulse vx duration`（0.1–0.5 s 短脉冲，测步长/停车距离）和 `plan forward left`；`goto` 保留初始原点固定点语义，但改为一次生成的路径 + Pure Pursuit，所有正常运动 `vy=0`，不再侧移。
+- 当前原生工具使用 `SportModeState` 本地位姿做**机制验证**，不是 D435i/VINS 或 5 cm 验收。
 - VINS 可构建、可输出位姿和速度，但精度、尺度、停后稳定性、相机到机身外参都未验证。
 - `scripts/go2_nav_core/` 已有 `BodyState`/`VelocityCommand` 接口、相机 IMU→`base_link` 变换、杠杆臂补偿、nav 系转换、相对目标一次性转换和 valid 判据；`T_base_cam` 仍为未实测状态，测试只用合成值。
 - `scripts/go2_nav_plan/` 已有 VINS CSV→`BodyState` 回放、直线/Dubins 路径和 Pure Pursuit 离线模拟；模拟 A→B 位置误差约 2 cm，不是实机 5 cm。
-- 路径生成、Pure Pursuit 跟踪、VINS 与运动工具联动、5 cm 实机验收：未实现。
+- VINS 与运动工具实时联动、实机 A→B、5 cm 验收：未实现。
 
 ## 离线构建与自检
 
@@ -62,7 +63,7 @@ cmake -S scripts/go2_native_motion -B build/native_motion-sdk \
 cmake --build build/native_motion-sdk --parallel 2
 ```
 
-`GO2_REAL_ROBOT=ON` 而 SDK 缺失时配置直接失败；`AUTO` 缺 SDK 时只构建核心和自检，并明确说明实机入口未构建。
+`GO2_REAL_ROBOT=ON` 而 SDK 缺失时配置直接失败；`AUTO` 缺 SDK 时只构建核心和自检，并明确说明实机入口未构建。原生工具构建会一并构建 `scripts/go2_nav_plan/` 的路径和跟踪库，不额外需要 SDK。
 
 机身状态接口模块只依赖 C++17 标准库：
 

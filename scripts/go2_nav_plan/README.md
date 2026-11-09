@@ -1,6 +1,6 @@
 # go2_nav_plan：VINS→base_link 与 A→B 路径/跟踪离线原型
 
-状态：离线原型，2026-11-09。只依赖 C++17 标准库和 `go2_nav_core`；不接 VINS 实时数据、DDS、机器人或相机。
+状态：离线原型，2026-11-09。只依赖 C++17 标准库和 `go2_nav_core`；不接 VINS 实时数据、DDS、机器人或相机。原生工具 `scripts/go2_native_motion/` 已通过 CMake 链接本模块的路径和跟踪库，但当前只用原生 SportModeState 位姿做机制验证。
 
 ## 内容
 
