@@ -132,7 +132,7 @@
 | 2026-11-09 | 建立状态文档 | 完成 | 待提交 | 本文档 |
 | 2026-11-09 | T1 机身状态接口与离线变换 | 完成（离线） | `feat/body-state-interface`，PR #1 | 自检通过；`T_base_cam` 未实测 |
 | 2026-11-09 | M1-1 离线回放 + M1-2 路径/跟踪原型 | 完成（离线） | `feat/native-pulse-plan` | VINS CSV→`BodyState`；Dubins + Pure Pursuit；模拟 A→B 约 2 cm；临时外参配置；实机未验证 |
-| 2026-11-09 | M1-3 原生工具脉冲 + 路径跟踪接入 | 完成（离线） | `feat/native-pulse-plan`，PR 待创建 | `pulse`/`plan`；`goto` 改用路径 + PP；`vy=0`；无 SDK/SDK 构建和自检通过；实机未运行 |
+| 2026-11-09 | M1-3 原生工具脉冲 + 路径跟踪接入 | 完成（离线） | `feat/native-pulse-plan`，PR #2 | `pulse`/`plan`；`goto` 改用路径 + PP；`vy=0`；无 SDK/SDK 构建和自检通过；实机未运行 |
 
 ## 更新规则
 
