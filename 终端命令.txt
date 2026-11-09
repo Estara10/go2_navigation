@@ -1,0 +1,114 @@
+
+终端 A：Orin 相机
+
+ssh unitree@192.168.123.18
+# 密码
+
+date -u +%s.%N
+# 把输出发我，我对电脑时间；需要对齐时：
+# sudo date -u -s @<电脑 epoch>
+
+source /opt/ros/foxy/setup.bash
+# 若提示 ros:foxy(1) noetic(2) ?，输入 1
+
+export ROS_DOMAIN_ID=42
+export ROS_LOCALHOST_ONLY=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>192.168.123.18</NetworkInterfaceAddress></General></Domain></CycloneDDS>'
+
+pgrep -af realsense2_camera_node || true
+
+ros2 run realsense2_camera realsense2_camera_node --ros-args \
+  -r __ns:=/camera/camera -r __node:=camera \
+  -p device_type:=d435i -p enable_depth:=false -p enable_color:=false \
+  -p enable_infra1:=true -p enable_infra2:=true \
+  -p depth_module.profile:=480,270,15 -p depth_module.emitter_enabled:=0 \
+  -p enable_gyro:=true -p enable_accel:=true -p gyro_fps:=200 -p accel_fps:=100 \
+  -p enable_sync:=true -p unite_imu_method:=2
+
+启动后告诉我，我确认话题和 VINS 输入。
+
+终端 B：原生工具（你发运动命令）
+
+第一次：负向检查，不运动
+
+cd /home/lidio/go2_navigation
+export UNITREE_SDK2_ROOT=/home/lidio/Libraries/unitree_sdk2
+RUN=/home/lidio/go2_navigation/logs/field_native/$(date -u +%Y%m%d_%H%M%S)
+mkdir -p "$RUN"
+echo "RUN=$RUN"
+
+env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
+  ./build/final_sdk/go2_native_motion \
+  --domain 0 --interface enp7s0 \
+  --control-source vins \
+  --vins-control-port 46001 --vins-state-port 46002 \
+  --vins-timeout-s 0.5 \
+  --csv "$RUN/native_motion.csv"
+
+输入：
+
+origin
+
+应看到 unmeasured_extrinsic 拒绝。然后：
+
+quit
+
+第二次：机制测试
+
+同一个终端重新启动：
+
+env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
+  ./build/final_sdk/go2_native_motion \
+  --domain 0 --interface enp7s0 \
+  --control-source vins \
+  --allow-unmeasured-extrinsic \
+  --vins-control-port 46001 --vins-state-port 46002 \
+  --vins-timeout-s 0.5 \
+  --csv "$RUN/native_motion.csv"
+
+按顺序输入：
+
+origin
+status
+plan 0.5 0
+
+停稳并测量后：
+
+stop
+
+再做 1 米：
+
+plan 1.0 0
+stop
+quit
+
+速度测试
+
+先 quit 掉上面的 VINS 模式，再启动原生模式：
+
+RUN=/home/lidio/go2_navigation/logs/field_pulse/$(date -u +%Y%m%d_%H%M%S)
+mkdir -p "$RUN"
+echo "RUN=$RUN"
+
+env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
+  ./build/final_sdk/go2_native_motion \
+  --domain 0 --interface enp7s0 \
+  --csv "$RUN/native_pulse.csv"
+
+输入：
+
+origin
+pulse 0.30 0.3
+pulse 0.25 0.3
+stop
+quit
+
+握手方式
+
+- 你发：准备 X → 我检查 VINS/桥接/状态 → 回 可以开始 X。
+- 你测量 → 发 结束 X：实际位移/现象。
+- 我检查停止和日志 → 回 可以继续/可以停。
+- 全部跑完再分析。
+
+只有终端 B 会发运动；不要同时开两个原生工具。 密码只在 SSH 提示时输入（现场确认，不写入仓库或日志）。

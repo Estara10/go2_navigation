@@ -18,6 +18,7 @@
 - 2026-11-09：原生工具接入短脉冲 `pulse` 和 `plan`；`goto` 改为一次生成的路径 + Pure Pursuit，删除侧移控制，所有正常运动 `vy=0`；离线自检、无 SDK/SDK 构建通过。仍是原生日姿机制验证，不是 VINS/5 cm。
 - 2026-11-09：VINS 实时桥接离线实现；`scripts/go2_vins_bridge/` 提供 VINS 样本→`base_link`→UDP、origin 握手和 valid 原因；原生工具新增 `--control-source vins`，plan/goto/yaw 可用 VINS 状态，valid=0/包超时停止且不回退原生位置；桥接/原生/UDP 自检通过。未运行 ROS 节点或真实 VINS。
 - 2026-11-09：STATE 增加 `vx/vy/wz` 和机器可读 `measured`；原生 vins 模式默认拒绝 `measured=0`，只有 `--allow-unmeasured-extrinsic` 可覆盖；CSV 增加 `vins_vx/vy/wz`、`vins_measured`、`measured_override`；离线自检通过。
+- 2026-11-09（现场第一次 A→B）：`plan 0.5 0` 用 D435i/VINS→`base_link`→Pure Pursuit→Go2 跑通，实际前向约 51 cm（目标 50 cm，前向误差约 1 cm），用户复测「非常准」；控制期间 VINS 时龄约 0.006 s，`ARRIVED` 正常。横向/朝向未测；VINS 停后约 8.4 cm 重锚定；仍是 `measured=0` 临时外参、单次机制验证，不是 5 cm 验收。
 - 工程独立化：目录、文档、去个人路径、构建选项已整理；无 SDK 构建和自检、SDK 构建、`ON` 缺 SDK 失败均有记录。本轮未重跑构建。
 - 原生工具：`Move/StopMove`、10 Hz 重发、状态超时停止、停止失败锁存、CSV、离线自检。
 - VINS：固定提交、补丁、480×270 候选配置、独立构建说明。
@@ -58,7 +59,8 @@
 ## 已知问题与边界
 
 - VINS 第 1 轮出现 2.875 m/约 1 m 跳变；第 2/3 轮约 1.2 m；A/B 回放冻结外参后稳定，但未复现现场异常。冻结外参只是诊断，不是生产配置。
-- VINS 停后仍有约 1.9–9.5 cm 变化；IMU 使用默认标定。
+- 现场：VINS 停后约 8.4 cm 重锚定（到达 `(0.454, 0.021)` → 停后 12 s `(0.538, -0.009)`）；IMU 使用默认标定。
+- 原生工具空闲时 UDP 旧包缓冲，导致下一次 `plan` 第一次 `STALE`；`VinsUdpClient` 需改为持续 drain 或命令前排空（执行器待修）。现场暂用「plan 前先 status、第一次 STALE 再发一次」绕过。
 - `Move` 返回 0 只表示发送成功；`StopMove` 返回 0 不代表实际停稳。
 - 首期只在平地、开阔、低速验证，不声称避障。
 - 历史文档保留 `/home/lidio`、`192.168.123.x` 等原路径，仅作追溯。
@@ -88,6 +90,7 @@
 - 交付：0.20/0.25/0.30 m/s 等候选速度的重复记录；最小步长、停车距离、延迟、定位误差和重复性。
 - 完成：给出明确数值，判断当前原生控制下 5 cm 是否可达。
 - 停止：若最小步长或停车距离明显大于 5 cm，停止并报告，不修改验收标准。
+- 状态：0.30 m/s 能走（用户报告）；0.5 m plan 现场实际约 51 cm、前向约 1 cm；0.20/0.25 m/s 最小步长、停车距离、延迟、横向/朝向重复未做。
 
 ### M1-1 定位链（现场 + 离线）
 
@@ -119,6 +122,7 @@
 - 目标：0.5 m 直线 → 1 m 直线 → 侧向/斜向；单次运行、人工停止、独立测量。
 - 交付：现场记录、CSV、视频和卷尺测量。
 - 完成：实际到达并停稳；异常可终止；不靠人工补走。
+- 状态：0.5 m 直线完成一次机制测试（前向约 1 cm，`ARRIVED`）；1 m、侧向、斜向、横向/朝向测量和重复均未做。
 - 依赖：M1-0、M1-1、M1-2、M1-3。
 
 ### M1-5 5 cm 验收
@@ -140,6 +144,11 @@
 | 2026-11-09 | M1-3 原生工具脉冲 + 路径跟踪接入 | 完成（离线） | Lidio | `pulse`/`plan`；`goto` 改用路径 + PP；`vy=0`；无 SDK/SDK 构建和自检通过；实机未运行 |
 | 2026-11-09 | M1-3 VINS/UDP 桥接 + native vins 模式 | 完成（离线） | Lidio | VINS→base_link→UDP；origin 握手；valid=0/超时停止；桥接/原生/UDP 自检通过；未运行 ROS/VINS/实机 |
 | 2026-11-09 | STATE 速度 + measured 拦截 | 完成（离线） | Lidio | `vx/vy/wz`、`measured`；默认拒绝 `measured=0`；`--allow-unmeasured-extrinsic` 覆盖并标记 CSV；离线自检通过 |
+| 2026-11-09 | 现场第一次 A→B（`plan 0.5 0`） | 单次机制验证 | Lidio | 前向约 51 cm/1 cm 误差；横向朝向未测；VINS 停后约 8.4 cm 重锚定；首次 plan STALE（UDP 缓冲）；非 5 cm 验收 |
+
+## 交接
+
+现场暂停，下次安排见 `docs/HANDOFF.md`：先修 UDP 客户端 drain 和桥接停发语义，再补 0.5 m 横向/朝向、1 m、速度标定，外参补到 `measured=1` 后谈 5 cm。
 
 ## 更新规则
 
