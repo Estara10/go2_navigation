@@ -19,6 +19,7 @@
 |---|---|
 | `STATUS.md` | 当前状态与下一步任务 |
 | `docs/HANDOFF.md` | 现场交接：本次结果、已知问题、下一步 |
+| `docs/FIELD_2026-11-10.md` | 2026-11-10 现场记录：直线 5/5 ≤5 cm、转弯暴露外参、VINS 发散 |
 | `A1_PROJECT_REQUIREMENTS.md` | 需求、坐标约定和验收定义 |
 | `AGENTS.md` | 项目边界与安全约定 |
 | `docs/COLLABORATION.md` | 工作流、接口和安全边界 |

@@ -145,10 +145,13 @@
 | 2026-11-09 | M1-3 VINS/UDP 桥接 + native vins 模式 | 完成（离线） | Lidio | VINS→base_link→UDP；origin 握手；valid=0/超时停止；桥接/原生/UDP 自检通过；未运行 ROS/VINS/实机 |
 | 2026-11-09 | STATE 速度 + measured 拦截 | 完成（离线） | Lidio | `vx/vy/wz`、`measured`；默认拒绝 `measured=0`；`--allow-unmeasured-extrinsic` 覆盖并标记 CSV；离线自检通过 |
 | 2026-11-09 | 现场第一次 A→B（`plan 0.5 0`） | 单次机制验证 | Lidio | 前向约 51 cm/1 cm 误差；横向朝向未测；VINS 停后约 8.4 cm 重锚定；首次 plan STALE（UDP 缓冲）；非 5 cm 验收 |
+| 2026-11-10 | 修 UDP 空闲 drain + 重建现场二进制 | 完成 | `70403a1` | 空闲每 0.05 s `snapshot()`；自检 `vins_idle_drain`；`build/final_sdk/go2_native_motion` 重建 |
+| 2026-11-10 | 修正 VINS 话题名（`/vins/odometry`→`/odometry`） | 完成 | `5dc5d53` | 本 VINS 发行版无 `/vins/` 前缀；桥接默认值、文档、录制 QoS 全改 |
+| 2026-11-10 | 现场直线重复测试（0.5/1/2 m 各若干） | 机制验证 | 见 `docs/FIELD_2026-11-10.md` | 直线 5/5 物理 ≤5 cm（−2~+4），2 m 仍 +1 cm；但 base_link 比物理一贯少 ~4–5 cm；`plan 2 2`（51° 转弯）物理偏差大，暴露 `T_base_cam` 未标定；轮间搬运致 VINS 低纹理发散 |
 
 ## 交接
 
-现场暂停，下次安排见 `docs/HANDOFF.md`：先修 UDP 客户端 drain 和桥接停发语义，再补 0.5 m 横向/朝向、1 m、速度标定，外参补到 `measured=1` 后谈 5 cm。
+现场暂停，下次安排见 `docs/HANDOFF.md` 与 `docs/FIELD_2026-11-10.md`：回去先把 `T_base_cam` 标定到 `measured=1` 并核相机→`base_link` 换算（2 m 直线相机 2.055 vs base_link 1.964），再加 VINS 低纹理/快速搬运的发散检测与恢复；之后才能跑曲线/斜向和 5 cm 验收。
 
 ## 更新规则
 
