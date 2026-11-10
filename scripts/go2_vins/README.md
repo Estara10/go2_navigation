@@ -108,8 +108,8 @@ colcon --log-base "$VINS_BUILD_DIR/log" build --packages-up-to vins \
 source "$VINS_INSTALL_DIR/setup.bash"
 ros2 pkg prefix vins
 ros2 pkg executables vins
-ls -l "$VINS_INSTALL_DIR/lib/vins/vins_node"
-ldd "$VINS_INSTALL_DIR/lib/vins/vins_node" | grep "not found" || true
+ls -l "$VINS_INSTALL_DIR/vins/lib/vins/vins_node"
+ldd "$VINS_INSTALL_DIR/vins/lib/vins/vins_node" | grep "not found" || true
 ```
 
 `ldd` 不应出现 `not found`。历史记录中该检查共有 183 项依赖，包含系统 `libceres.so.2`；不同机器的条目数会不同，不能把 183 当作固定指标。

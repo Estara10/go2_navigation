@@ -27,6 +27,7 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>192
 ls -l /opt/ros/foxy/lib/librmw_cyclonedds_cpp.so
 # 库存在再继续；不存在就停在这里保留报错。
 
+
 pgrep -af realsense2_camera_node || true
 
 ros2 run realsense2_camera realsense2_camera_node --ros-args \
@@ -60,11 +61,10 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>192.168.123.99</NetworkInterfaceAddress></General></Domain></CycloneDDS>'
 export VINS_IMAGE_QOS=best_effort
 export VINS_SYNC_DIAGNOSTICS=1
-source /home/lidio/go2_navigation/install/vins/setup.bash   # 构建后确认路径
+source /home/lidio/go2_navigation/install/vins/setup.bash
 
-ros2 run vins vins_node --ros-args \
-  -p config_file:="$RUN/config/realsense_stereo_imu.yaml"
-# 构建后核对参数名 config_file 是否与 fork 一致。
+ros2 run vins vins_node "$RUN/config/realsense_stereo_imu.yaml"
+# config_file 是位置参数（fork 源码 non_ros_args[1]，已核对），不是 -p 参数。
 
 确认日志出现 Initialization finish! 且 /vins/odometry 有输出后，再开桥接。
 未初始化时先停，不要移动机器人。
@@ -145,11 +145,10 @@ docs/FIELD_RUN_MEASUREMENT.md：量前向 L_fwd、横向 L_lat，当场写记录
 
 只有终端 B 会发运动；不要同时开两个原生工具。
 
-## 当前缺口（自测前必须先解决）
+## 当前缺口（自测前必须解决）
 
-1. VINS 未构建在本机：third_party/VINS-Fusion-ROS2 不存在、install/vins 不存在、
-   旧 /tmp/go2_vins_build 已删。需先按 scripts/go2_vins/README.md 构建一次
-   （clone + 打补丁 + colcon build 到项目内 install 目录）。
+1. ✅ VINS 已构建在本机 install/vins（2026-11-10，固定提交 72023bc + 补丁；
+   二进制 install/vins/vins/lib/vins/vins_node，ldd 无缺库）。重启不丢，无需再构建。
 2. 桥接二进制有两份（build/go2_vins_bridge/、build/final_bridge/），用前确认哪份是最新构建。
 3. 原生工具 vins 模式默认拒绝 measured=0，只有加 --allow-unmeasured-extrinsic 才放行；
    这只是机制测试，不是 5 cm 验收。
