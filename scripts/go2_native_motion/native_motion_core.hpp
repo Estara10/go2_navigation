@@ -58,6 +58,7 @@ struct Config {
   double vins_origin_timeout_s = 2.0;
   bool allow_unmeasured_extrinsic = false;
   std::string csv_path;
+  bool static_walk = false;
 };
 
 struct StateSnapshot {

@@ -108,9 +108,10 @@ void printUsage(const char* program) {
       << " --domain <DDS domain> --interface <NIC>"
          " [--vx 0.10] [--duration-s 2.0]"
          " [--goto-max-speed 0.30] [--goto-approach-speed 0.30]"
-         " [--csv <path>]\n"
+         " [--csv <path>] [--gait default|static]\n"
       << "仅使用 Go2 原生 SportClient Move/StopMove 和 rt/sportmodestate；\n"
-      << "不创建 LowCmd、不释放/切换控制权、不自动站立或切换步态。\n"
+      << "不创建 LowCmd、不释放/切换控制权、不自动站立；默认不切换步态，"
+         "仅 --gait static 时请求切换。\n"
       << "运行后等待有效原生状态，先输入 origin 确认起点，再输入运动命令。\n"
       << "命令: status | origin | straight | pulse vx duration | goto x y | "
          "plan forward left | yaw deg | stop | quit | help\n"
@@ -233,6 +234,17 @@ int parseArgs(int argc, char** argv, Options& options, std::string& error) {
       }
     } else if (key == "--csv") {
       if (!takeValue(options.config.csv_path)) return 2;
+    } else if (key == "--gait") {
+      std::string gait;
+      if (!takeValue(gait)) return 2;
+      if (gait == "static") {
+        options.config.static_walk = true;
+      } else if (gait == "default") {
+        options.config.static_walk = false;
+      } else {
+        error = "--gait 必须是 default 或 static";
+        return 2;
+      }
     } else {
       error = "未知参数: " + key;
       return 2;
@@ -368,6 +380,9 @@ class SportBackend final : public go2_native_motion::Backend {
       subscriber_->CloseChannel();
     }
   }
+
+  // Opt-in stable gait for precision tests; never changes default behavior.
+  int32_t switchToStaticWalk() { return client_.StaticWalk(); }
 
   go2_native_motion::StateSnapshot snapshot() override {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -557,6 +572,37 @@ int main(int argc, char** argv) {
   try {
     {
       SportBackend backend;
+      if (options.config.static_walk) {
+        // Only request the gait after a fresh SportModeState is available; do
+        // not assume the failed/absent call restores the default gait.
+        bool fresh = false;
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < deadline) {
+          const auto snap = backend.snapshot();
+          if (snap.received && std::isfinite(snap.age_s) && snap.age_s <= 0.3) {
+            fresh = true;
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!fresh) {
+          std::cerr << "--gait static：5s 内无新鲜 SportModeState，"
+                       "拒绝切换步态并退出。\n";
+          throw std::runtime_error("no fresh state before StaticWalk");
+        }
+        std::cout << "将请求 StaticWalk() 切换静态走；请先确认机器人已站立、"
+                     "周围清空。\n";
+        const int32_t gait_code = backend.switchToStaticWalk();
+        std::cout << "StaticWalk() 请求返回 " << gait_code
+                  << (gait_code == 0
+                          ? "（已请求，请目视确认机器人确实进入静态走）"
+                          : "（失败；请检查现场，不要假定已恢复默认步态）")
+                  << "\n";
+        if (gait_code != 0) {
+          throw std::runtime_error("StaticWalk request failed");
+        }
+      }
       g_reader_stop.store(false);
       reader = std::thread(readerLoop, std::ref(command_queue));
 
