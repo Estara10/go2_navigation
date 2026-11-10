@@ -24,6 +24,7 @@
 | `docs/COLLABORATION.md` | 工作流、接口和安全边界 |
 | `docs/INTERFACE.md` | 冻结的机身状态/速度命令接口与 `T_base_cam` 方向 |
 | `docs/MEASUREMENT_CHECKLIST.md` | `base_link` 原点和 `T_base_cam` 的测量清单 |
+| `docs/FIELD_RUN_MEASUREMENT.md` | 现场 A→B 自测与记录流程（每轮当场记数，带回分析） |
 | `scripts/go2_nav_core/` | 仅标准库的机身状态变换与离线自检 |
 | `scripts/go2_nav_plan/` | VINS→`base_link` 回放、Dubins + Pure Pursuit 离线原型 |
 | `scripts/go2_vins_bridge/` | ROS 2 VINS→`base_link`→UDP 桥（只发状态） |
