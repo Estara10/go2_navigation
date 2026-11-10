@@ -1,8 +1,16 @@
+# 现场终端（完整 4 个，按顺序启动）
 
-终端 A：Orin 相机
+启动顺序：A 相机(Orin) → C VINS(电脑) → D 桥接(电脑) → B 原生工具(电脑)。
+收尾逆序：先停原生工具 → 桥接 → VINS → 相机，逐个核对残留进程。
+
+以下 IP、ROS domain、SDK/VINS 路径都是历史现场值，执行前由操作者显式确认，不照抄默认。
+
+---
+
+## 终端 A：Orin 相机（ssh）
 
 ssh unitree@192.168.123.18
-# 密码
+# 密码只在 SSH 提示时输入（现场确认，不写入仓库或日志）
 
 date -u +%s.%N
 # 把输出发我，我对电脑时间；需要对齐时：
@@ -16,6 +24,9 @@ export ROS_LOCALHOST_ONLY=0
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>192.168.123.18</NetworkInterfaceAddress></General></Domain></CycloneDDS>'
 
+ls -l /opt/ros/foxy/lib/librmw_cyclonedds_cpp.so
+# 库存在再继续；不存在就停在这里保留报错。
+
 pgrep -af realsense2_camera_node || true
 
 ros2 run realsense2_camera realsense2_camera_node --ros-args \
@@ -26,17 +37,67 @@ ros2 run realsense2_camera realsense2_camera_node --ros-args \
   -p enable_gyro:=true -p enable_accel:=true -p gyro_fps:=200 -p accel_fps:=100 \
   -p enable_sync:=true -p unite_imu_method:=2
 
-启动后告诉我，我确认话题和 VINS 输入。
+启动后告诉我，我确认话题和 VINS 输入。保持此终端运行。
 
-终端 B：原生工具（你发运动命令）
+---
+
+## 终端 C：VINS（电脑，独立终端）
+
+前置：VINS 必须已按 scripts/go2_vins/README.md 构建到项目内 install 目录。
+当前本机未构建（见文末「当前缺口」）；先构建再照下面启动。
+
+先复制配置到本轮目录并改写 output_path / pose_graph_save_path（相对启动目录）：
+
+RUN=/home/lidio/go2_navigation/logs/field_vins/$(date -u +%Y%m%d_%H%M%S)
+mkdir -p "$RUN/config"; echo "RUN=$RUN"
+cp scripts/go2_vins/config/d435i_480x270/*.yaml "$RUN/config/"
+# 编辑 "$RUN/config/realsense_stereo_imu.yaml" 里的 output_path、pose_graph_save_path 指向 $RUN
+
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=42
+export ROS_LOCALHOST_ONLY=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>192.168.123.99</NetworkInterfaceAddress></General></Domain></CycloneDDS>'
+export VINS_IMAGE_QOS=best_effort
+export VINS_SYNC_DIAGNOSTICS=1
+source /home/lidio/go2_navigation/install/vins/setup.bash   # 构建后确认路径
+
+ros2 run vins vins_node --ros-args \
+  -p config_file:="$RUN/config/realsense_stereo_imu.yaml"
+# 构建后核对参数名 config_file 是否与 fork 一致。
+
+确认日志出现 Initialization finish! 且 /vins/odometry 有输出后，再开桥接。
+未初始化时先停，不要移动机器人。
+
+---
+
+## 终端 D：桥接（电脑，独立终端）
+
+先 conda deactivate（或用干净 Humble shell），否则 Anaconda libstdc++ 缺 GLIBCXX_3.4.30 会跑不起来。
+
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=42
+export ROS_LOCALHOST_ONLY=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>192.168.123.99</NetworkInterfaceAddress></General></Domain></CycloneDDS>'
+
+cd /home/lidio/go2_navigation
+./build/go2_vins_bridge/go2_vins_bridge \
+  --config scripts/go2_nav_plan/config/d435i_provisional.conf \
+  --vins-topic /vins/odometry \
+  --control-port 46001 --state-port 46002
+# 启动前确认二进制是最近一次构建的（build/go2_vins_bridge/ 与 build/final_bridge/ 都有同名文件）。
+
+---
+
+## 终端 B：原生工具（电脑，你发运动命令）
 
 第一次：负向检查，不运动
 
 cd /home/lidio/go2_navigation
 export UNITREE_SDK2_ROOT=/home/lidio/Libraries/unitree_sdk2
-RUN=/home/lidio/go2_navigation/logs/field_native/$(date -u +%Y%m%d_%H%M%S)
-mkdir -p "$RUN"
-echo "RUN=$RUN"
+RUN=/home/lidio/go2_navigation/logs/field_runs/$(date -u +%Y%m%d_%H%M%S)_check
+mkdir -p "$RUN"; echo "RUN=$RUN"
 
 env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
   ./build/final_sdk/go2_native_motion \
@@ -46,13 +107,7 @@ env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
   --vins-timeout-s 0.5 \
   --csv "$RUN/native_motion.csv"
 
-输入：
-
-origin
-
-应看到 unmeasured_extrinsic 拒绝。然后：
-
-quit
+输入 origin；应看到 unmeasured_extrinsic 拒绝。然后 quit。
 
 第二次：机制测试
 
@@ -77,38 +132,24 @@ plan 0.5 0
 
 stop
 
-再做 1 米：
+再做下一轮就重新放回 A、重新对齐，重新 origin/status/plan。每轮测量按
+docs/FIELD_RUN_MEASUREMENT.md：量前向 L_fwd、横向 L_lat，当场写记录卡。
 
-plan 1.0 0
-stop
-quit
+---
 
-速度测试
-
-先 quit 掉上面的 VINS 模式，再启动原生模式：
-
-RUN=/home/lidio/go2_navigation/logs/field_pulse/$(date -u +%Y%m%d_%H%M%S)
-mkdir -p "$RUN"
-echo "RUN=$RUN"
-
-env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:"$UNITREE_SDK2_ROOT/lib" \
-  ./build/final_sdk/go2_native_motion \
-  --domain 0 --interface enp7s0 \
-  --csv "$RUN/native_pulse.csv"
-
-输入：
-
-origin
-pulse 0.30 0.3
-pulse 0.25 0.3
-stop
-quit
-
-握手方式
+## 握手方式（每轮）
 
 - 你发：准备 X → 我检查 VINS/桥接/状态 → 回 可以开始 X。
-- 你测量 → 发 结束 X：实际位移/现象。
+- 你测量 → 发 结束 X：实际前向/横向。
 - 我检查停止和日志 → 回 可以继续/可以停。
-- 全部跑完再分析。
 
-只有终端 B 会发运动；不要同时开两个原生工具。 密码只在 SSH 提示时输入（现场确认，不写入仓库或日志）。
+只有终端 B 会发运动；不要同时开两个原生工具。
+
+## 当前缺口（自测前必须先解决）
+
+1. VINS 未构建在本机：third_party/VINS-Fusion-ROS2 不存在、install/vins 不存在、
+   旧 /tmp/go2_vins_build 已删。需先按 scripts/go2_vins/README.md 构建一次
+   （clone + 打补丁 + colcon build 到项目内 install 目录）。
+2. 桥接二进制有两份（build/go2_vins_bridge/、build/final_bridge/），用前确认哪份是最新构建。
+3. 原生工具 vins 模式默认拒绝 measured=0，只有加 --allow-unmeasured-extrinsic 才放行；
+   这只是机制测试，不是 5 cm 验收。
