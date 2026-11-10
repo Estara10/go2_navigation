@@ -1,6 +1,6 @@
 # 项目状态与下一步
 
-> 每次任务完成后更新本文档。最后更新：2026-11-09
+> 每次任务完成后更新本文档。最后更新：2026-11-10
 
 ## 当前阶段
 
@@ -148,6 +148,9 @@
 | 2026-11-10 | 修 UDP 空闲 drain + 重建现场二进制 | 完成 | `70403a1` | 空闲每 0.05 s `snapshot()`；自检 `vins_idle_drain`；`build/final_sdk/go2_native_motion` 重建 |
 | 2026-11-10 | 修正 VINS 话题名（`/vins/odometry`→`/odometry`） | 完成 | `5dc5d53` | 本 VINS 发行版无 `/vins/` 前缀；桥接默认值、文档、录制 QoS 全改 |
 | 2026-11-10 | 现场直线重复测试（0.5/1/2 m 各若干） | 机制验证 | 见 `docs/FIELD_2026-11-10.md` | 直线 5/5 物理 ≤5 cm（−2~+4），2 m 仍 +1 cm；但 base_link 比物理一贯少 ~4–5 cm；`plan 2 2`（51° 转弯）物理偏差大，暴露 `T_base_cam` 未标定；轮间搬运致 VINS 低纹理发散 |
+| 2026-11-10 | 离线 E0 数据索引 / E1 换算复核 | R6 因果链确认；向量闭合未完成 | `docs/ANALYSIS_2026-11-10.md` | R6 物理前1.8/左1.0 m、VINS相机2.956 m、base_link估计(1.989,1.973) m；2.49 m 物理上界被超出0.466 m。精确向量力臂和工厂 IMU↔optical 外参仍待补。 |
+| 2026-11-10 | R6 VINS 一致性门控 + 健康状态机（离线） | 实现完成，离线自检通过 | `scripts/go2_native_motion/`, `scripts/go2_vins_bridge/` | native 比较累计 VINS 位移与命令速度积分（1.15 倍）；持续比较 VINS/SportModeState 速度模长；异常立即停止且不 ARRIVED。桥接新增 header 停滞、PointCloud 特征门槛、pose/twist 慢漂检查和恢复确认阶段；冻结接口未改。所有自检通过；阈值为可调离线初值，未作现场验证。 |
+| 2026-11-10 | 更新临时 D435i 安装配置 | 完成（仍未实测/未用于实机） | `scripts/go2_nav_plan/config/d435i_provisional.conf` | tx=0.35 m、tz=0.07 m、pitch=-7°；代码正 pitch 令机身前向轴向下，因此负值表达相机上仰；`measured=0` 保留。 |
 
 ## 交接
 

@@ -303,6 +303,9 @@ class FakeVinsClient final : public g::VinsClient {
 
   go2_nav::VinsWireState snapshot() override {
     ++snapshot_calls;
+    if (state.received) {
+      state.x += x_increment_per_snapshot;
+    }
     if (auto_stamp && state.received) {
       state.stamp_s = clock_.now;
     }
@@ -359,6 +362,7 @@ class FakeVinsClient final : public g::VinsClient {
   int origin_requests = 0;
   int ping_requests = 0;
   int snapshot_calls = 0;
+  double x_increment_per_snapshot = 0.0;
 };
 
 class ScriptedCommands {
@@ -485,6 +489,49 @@ void testTransforms() {
   checkNear(local.y, 1.0, "local pose left y");
 
   std::cout << (failures == before ? "PASS" : "FAIL") << " transforms\n";
+}
+
+void testMotionConsistencyMonitor() {
+  const int before = failures;
+  g::MotionConsistencyMonitor normal;
+  normal.reset(0.0, {0.0, 0.0});
+  for (int i = 1; i <= 30; ++i) {
+    const double t = 0.1 * i;
+    const auto fault = normal.observe(t, {0.03 * i, 0.0}, 0.30, 0.30, 0.30);
+    check(fault == g::MotionConsistencyFault::None,
+          "motion consistency normal trajectory");
+  }
+
+  g::MotionConsistencyMonitor overestimate;
+  overestimate.reset(0.0, {0.0, 0.0});
+  auto fault = g::MotionConsistencyFault::None;
+  for (int i = 1; i <= 30 && fault == g::MotionConsistencyFault::None; ++i) {
+    const double t = 0.1 * i;
+    fault = overestimate.observe(t, {0.0358 * i, 0.0}, 0.30, 0.30, 0.30);
+  }
+  check(fault == g::MotionConsistencyFault::
+                    VinsDisplacementExceedsCommandBound,
+        "motion consistency catches VINS overestimate");
+
+  g::MotionConsistencyMonitor velocity_divergence;
+  velocity_divergence.reset(0.0, {0.0, 0.0});
+  fault = g::MotionConsistencyFault::None;
+  for (int i = 1; i <= 8 && fault == g::MotionConsistencyFault::None; ++i) {
+    const double t = 0.1 * i;
+    fault = velocity_divergence.observe(t, {0.0, 0.0}, 0.0, 0.0, 0.5);
+  }
+  check(fault == g::MotionConsistencyFault::VinsNativeSpeedDivergence,
+        "motion consistency catches sustained native speed divergence");
+
+  // A stopped task is not resumed by a later good observation: each task
+  // owns a fresh monitor, while task termination remains in the caller.
+  g::MotionConsistencyMonitor next_task;
+  next_task.reset(2.0, {0.0, 0.0});
+  check(next_task.observe(2.1, {0.0, 0.0}, 0.0, 0.0, 0.0) ==
+            g::MotionConsistencyFault::None,
+        "motion consistency recovery does not create an old task");
+  std::cout << (failures == before ? "PASS" : "FAIL")
+            << " motion_consistency_monitor\n";
 }
 
 void testWrapPi() {
@@ -969,6 +1016,32 @@ void testVinsControlSource() {
           "vins origin failure marker");
   }
 
+  // An impossible VINS position advance is stopped before it can be treated
+  // as arrival; a later valid stream does not recreate the terminated task.
+  {
+    Case test_case;
+    prepare(test_case);
+    test_case.config.control_source = g::ControlSource::Vins;
+    test_case.vins_client.x_increment_per_snapshot = 0.04;
+    test_case.script.add(0.0, "origin");
+    test_case.script.add(0.1, "plan 2 0");
+    test_case.script.add(3.0, "quit");
+    run(test_case);
+    const std::string csv = test_case.csv.str();
+    check(csv.find("KINEMATIC_DISPLACEMENT") != std::string::npos,
+          "impossible VINS displacement recorded");
+    check(csv.find("VINS_INVALID") != std::string::npos,
+          "impossible VINS displacement stops task");
+    check(csv.find("ARRIVED") == std::string::npos,
+          "impossible VINS displacement cannot report ARRIVED");
+    check(test_case.backend.move_calls < 30,
+          "impossible VINS displacement stops promptly");
+    check(noCmdAfter(csv, "stop_request"),
+          "impossible VINS displacement no command after stop");
+    check(countOccurrences(csv, ",task_start,") == 1,
+          "impossible VINS displacement does not auto-resume");
+  }
+
   // valid=0 stops an active plan immediately and does not fall back.
   {
     Case test_case;
@@ -979,6 +1052,10 @@ void testVinsControlSource() {
     test_case.script.add(0.2, "status", [&test_case] {
       test_case.vins_client.setState(0.0, 0.0, 0.0, false,
                                      go2_nav::VinsReason::Stale);
+    });
+    test_case.script.add(0.3, "status", [&test_case] {
+      test_case.vins_client.setState(0.0, 0.0, 0.0, true,
+                                     go2_nav::VinsReason::Ok);
     });
     test_case.script.add(0.6, "quit");
     run(test_case);
@@ -992,6 +1069,8 @@ void testVinsControlSource() {
     check(noCmdAfter(csv, "stop_request"), "vins invalid no cmd after stop");
     check(test_case.backend.stop_calls == 2,
           "vins invalid stop + quit");
+    check(countOccurrences(csv, ",task_start,") == 1,
+          "VINS recovery does not restart stopped task");
   }
 
   // A stale timestamp (packet timeout) stops even if the last bridge state
@@ -1467,6 +1546,7 @@ void testConfigValidation() {
 
 int main() {
   testTransforms();
+  testMotionConsistencyMonitor();
   testWrapPi();
   testParseCommand();
   testStraightPreserved();

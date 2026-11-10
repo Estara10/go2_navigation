@@ -41,14 +41,16 @@ target_compile_options(go2_vins_bridge_integration_test PRIVATE -Wall -Wextra)
 
 find_package(rclcpp QUIET)
 find_package(nav_msgs QUIET)
-if(rclcpp_FOUND AND nav_msgs_FOUND)
+find_package(sensor_msgs QUIET)
+if(rclcpp_FOUND AND nav_msgs_FOUND AND sensor_msgs_FOUND)
   add_executable(go2_vins_bridge main.cpp)
   target_link_libraries(go2_vins_bridge
-    PRIVATE go2_vins_bridge_core rclcpp::rclcpp ${nav_msgs_TARGETS})
+    PRIVATE go2_vins_bridge_core rclcpp::rclcpp ${nav_msgs_TARGETS}
+            ${sensor_msgs_TARGETS})
   target_compile_options(go2_vins_bridge PRIVATE -Wall -Wextra)
   message(STATUS "Building ROS 2 bridge node: go2_vins_bridge")
 else()
   message(STATUS
-    "rclcpp/nav_msgs not found; ROS bridge node not built; "
+    "rclcpp/nav_msgs/sensor_msgs not found; ROS bridge node not built; "
     "core and selftest are still available")
 endif()

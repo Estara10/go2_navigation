@@ -132,6 +132,18 @@ STATE <seq> <stamp> <x> <y> <z> <yaw> <vx> <vy> <wz> <valid> <reason> <measured>
 
 `RESET`/`JUMP`/`STALE` 后原生工具立即停止，不回退到原生 `SportModeState` 继续控制。恢复需要重新确认 VINS 并重新 `origin`（通常重启会话）。
 
+### 健康阶段与运动一致性（离线首版）
+
+桥接核心在冻结 `BodyState` / UDP 字段之外维护内部健康阶段：未初始化、健康、失效、待恢复、恢复确认。wire 格式和 `valid`/`reason` 字段不变；内部异常统一令 `valid=0`，沿 native 现有立即停止路径处理。
+
+- 保留 VINS 接收超时、非有限、header 回退和位姿跳变检查。
+- 单调接收时间新鲜不代表源数据新鲜：若 `/odometry` header 不前进超过 0.25 s，报 `STALE`。
+- 订阅 `/feature_tracker/feature` PointCloud，点数低于 30 或特征 header 超过 0.5 s 未前进时令状态无效；重复消息不能刷新源数据新鲜度。30 是根据现场异常段 n_pts 23–26 设的首版门槛，不是 VINS 通用安全阈值。
+- 用 3 s 窗口对照 base_link 位移与 VINS twist 积分；未解释残差超过 0.25 m 视为慢漂/运动学不一致并令状态无效。这是可调的离线初值。
+- 恢复需源 header 持续前进且有效性检查连续通过 1 s。恢复确认只恢复状态流，不恢复已停止的任务或旧目标；header 回退/重置仍需显式 `SET_ORIGIN`。native 停止失败锁存不受桥接恢复影响。
+
+native 控制循环另将 VINS base_link 累计位移与已发送平移速度积分比较：命令距离至少 0.5 m 后，若 VINS 距离超过命令积分的 1.15 倍即判 `KINEMATIC_DISPLACEMENT` 并立即停止；若 VINS 与新鲜 SportModeState 速度模长差超过 0.45 m/s 且持续 0.5 s，则判 `KINEMATIC_SPEED_DIVERGENCE`。阈值根据 R6 复现设定，属于可调离线首版参数，未经现场安全验证。两者为 native 内部诊断，不扩展冻结 wire 协议。
+
 ## 7. 外参与测量边界
 
 - 默认读取 `scripts/go2_nav_plan/config/d435i_provisional.conf`；当前 `measured=0`，只是临时外参。

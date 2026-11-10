@@ -14,6 +14,64 @@
 #include <vector>
 
 namespace go2_native_motion {
+
+void MotionConsistencyMonitor::reset(
+    double now_s, const std::array<double, 2>& vins_position) {
+  initialized_ = std::isfinite(now_s) && std::isfinite(vins_position[0]) &&
+                 std::isfinite(vins_position[1]);
+  last_time_s_ = now_s;
+  last_position_ = vins_position;
+  command_distance_m_ = 0.0;
+  vins_distance_m_ = 0.0;
+  divergence_start_s_ = 0.0;
+  divergence_active_ = false;
+}
+
+MotionConsistencyFault MotionConsistencyMonitor::observe(
+    double now_s, const std::array<double, 2>& vins_position,
+    double previous_command_speed_mps, double native_speed_mps,
+    double vins_speed_mps) {
+  if (!initialized_ || !std::isfinite(now_s) ||
+      !std::isfinite(vins_position[0]) || !std::isfinite(vins_position[1]) ||
+      !std::isfinite(previous_command_speed_mps) ||
+      !std::isfinite(native_speed_mps) || !std::isfinite(vins_speed_mps) ||
+      now_s <= last_time_s_) {
+    return MotionConsistencyFault::None;
+  }
+  const double dt = now_s - last_time_s_;
+  const double dx = vins_position[0] - last_position_[0];
+  const double dy = vins_position[1] - last_position_[1];
+  command_distance_m_ += std::max(0.0, previous_command_speed_mps) * dt;
+  vins_distance_m_ += std::hypot(dx, dy);
+  last_time_s_ = now_s;
+  last_position_ = vins_position;
+
+  // Ignore startup/settling until at least half a metre was commanded.
+  if (command_distance_m_ >= 0.5 &&
+      vins_distance_m_ > 1.15 * command_distance_m_) {
+    return MotionConsistencyFault::VinsDisplacementExceedsCommandBound;
+  }
+
+  // SportModeState velocity is only a cross-check. Require a sustained
+  // magnitude disagreement while moving; frame orientation is irrelevant.
+  constexpr double kSpeedDisagreementMps = 0.45;
+  constexpr double kSpeedDisagreementDurationS = 0.5;
+  const bool disagree = std::max(native_speed_mps, vins_speed_mps) > 0.20 &&
+      std::abs(native_speed_mps - vins_speed_mps) > kSpeedDisagreementMps;
+  if (disagree) {
+    if (!divergence_active_) {
+      divergence_active_ = true;
+      divergence_start_s_ = now_s;
+    } else if (now_s - divergence_start_s_ >=
+               kSpeedDisagreementDurationS) {
+      return MotionConsistencyFault::VinsNativeSpeedDivergence;
+    }
+  } else {
+    divergence_active_ = false;
+  }
+  return MotionConsistencyFault::None;
+}
+
 namespace {
 
 constexpr double kScheduleEpsilonS = 1e-9;
@@ -582,6 +640,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
   go2_nav::VinsWireState vins_state;
   Origin origin;
   Task task;
+  MotionConsistencyMonitor motion_consistency;
+  double previous_command_speed_mps = 0.0;
   double next_control = 0.0;
   bool control_valid = false;
   bool control_local_available = false;
@@ -913,6 +973,13 @@ int runInteractiveSession(const Config& config, Backend& backend,
   auto startTask = [&](const Task& new_task, const std::string& detail) {
     task = new_task;
     task.start_s = runtime.now_s();
+    previous_command_speed_mps = 0.0;
+    if (config.control_source == ControlSource::Vins &&
+        control_state.received) {
+      motion_consistency.reset(
+          task.start_s,
+          {control_state.position[0], control_state.position[1]});
+    }
     next_control = task.start_s;
     writeEvent("task_start", detail, &task);
     log << "任务开始: " << taskName(task.type) << " " << detail << "\n";
@@ -1257,6 +1324,27 @@ int runInteractiveSession(const Config& config, Backend& backend,
     }
 
     refreshControl(runtime.now_s());
+    if (control_valid && config.control_source == ControlSource::Vins) {
+      const double vins_speed = std::hypot(vins_state.vx, vins_state.vy);
+      const double native_speed = isFresh(state)
+          ? std::hypot(std::hypot(state.velocity[0], state.velocity[1]),
+                       state.velocity[2])
+          : vins_speed;
+      const auto fault = motion_consistency.observe(
+          runtime.now_s(), {control_state.position[0], control_state.position[1]},
+          previous_command_speed_mps, native_speed, vins_speed);
+      if (fault != MotionConsistencyFault::None) {
+        control_valid = false;
+        control_reason = fault == MotionConsistencyFault::
+                             VinsDisplacementExceedsCommandBound
+            ? "KINEMATIC_DISPLACEMENT"
+            : "KINEMATIC_SPEED_DIVERGENCE";
+        log << "运动一致性校验失败: " << control_reason
+            << " command_distance=" << motion_consistency.command_distance_m()
+            << " m vins_distance=" << motion_consistency.vins_distance_m()
+            << " m；立即停止，不判 ARRIVED。\n";
+      }
+    }
     if (!control_valid) {
       if (config.control_source == ControlSource::Vins) {
         log << "VINS 状态不可用（" << control_reason
@@ -1433,6 +1521,8 @@ int runInteractiveSession(const Config& config, Backend& backend,
       performStop(TaskEndReason::MoveApiError, true);
       continue;
     }
+
+    previous_command_speed_mps = std::hypot(vx, vy);
 
     next_control += kMovePeriodS;
     const double now_after_move = runtime.now_s();

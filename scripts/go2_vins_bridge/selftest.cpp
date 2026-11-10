@@ -106,6 +106,12 @@ void testExtrinsicConfig() {
   check(std::abs(camera_x.x) < 1e-12 && std::abs(camera_x.y + 1.0) < 1e-12 &&
             std::abs(camera_x.z) < 1e-12,
         "extrinsic optical rotation");
+  config.pitch_deg = -7.0;
+  const auto upward = go2_nav::makeExtrinsic(config);
+  const auto optical_forward =
+      upward.R_base_cam.apply(go2_nav::Vec3{0.0, 0.0, 1.0});
+  check(optical_forward.z > 0.0,
+        "negative pitch points optical forward axis upward");
   std::remove(path.c_str());
 }
 
@@ -198,23 +204,126 @@ void testCoreStaleJumpReset() {
         "bridge timeout STALE");
 
   core.onVinsSample(makeSample(1.1, 1.0, 0.1, 0.0, 0.0), 1.0);
-  state = core.makeState(1.0);
+  for (int i = 1; i <= 11; ++i) {
+    const double t = 1.0 + 0.1 * i;
+    core.onVinsSample(makeSample(1.1 + 0.1 * i, t, 0.1, 0.0, 0.0), t);
+  }
+  state = core.makeState(2.1);
   check(state.valid && std::abs(state.x - 0.1) < 1e-9,
-        "bridge fresh sample after stale");
+        "bridge confirms recovery after stale");
 
-  core.onVinsSample(makeSample(1.2, 1.1, 2.0, 0.0, 0.0), 1.1);
-  state = core.makeState(1.1);
+  core.onVinsSample(makeSample(2.3, 2.2, 3.0, 0.0, 0.0), 2.2);
+  state = core.makeState(2.2);
   check(!state.valid && state.reason == go2_nav::VinsReason::Jump,
         "bridge position jump JUMP");
 
-  core.onVinsSample(makeSample(1.0, 1.2, 2.0, 0.0, 0.0), 1.2);
-  state = core.makeState(1.2);
+  core.onVinsSample(makeSample(1.0, 2.3, 3.0, 0.0, 0.0), 2.3);
+  state = core.makeState(2.3);
   check(!state.valid && state.reason == go2_nav::VinsReason::Reset,
         "bridge header reset RESET");
   reason = go2_nav::VinsReason::Ok;
-  check(!core.setOrigin(1.2, &reason), "bridge origin after reset fails");
+  check(!core.setOrigin(2.3, &reason), "bridge origin after reset fails");
   check(reason == go2_nav::VinsReason::Reset,
         "bridge origin after reset reason RESET");
+}
+
+void testHealthHeaderStallAndRecovery() {
+  go2_vins_bridge::BridgeConfig config = makeConfig();
+  config.header_stall_s = 0.25;
+  config.recovery_confirm_s = 0.6;
+  go2_vins_bridge::BridgeCore core(config);
+  core.onVinsSample(makeSample(1.0, 0.0, 0.0, 0.0, 0.0), 0.0);
+  check(core.diagnostics().health ==
+            go2_vins_bridge::HealthState::Uninitialized,
+        "health starts uninitialized before nav origin");
+  go2_nav::VinsReason reason = go2_nav::VinsReason::NoVins;
+  check(core.setOrigin(0.0, &reason), "health header test origin");
+  check(core.diagnostics().health == go2_vins_bridge::HealthState::Healthy,
+        "origin establishes healthy state");
+  auto state = core.makeState(0.3);
+  check(!state.valid && state.reason == go2_nav::VinsReason::Stale,
+        "monotonic freshness cannot hide stalled source header");
+  check(core.diagnostics().health == go2_vins_bridge::HealthState::Failed,
+        "header stall enters failed state");
+
+  for (int i = 1; i <= 8; ++i) {
+    const double t = 0.1 * i;
+    core.onVinsSample(makeSample(1.0 + t, t, 0.0, 0.0, 0.0), t);
+  }
+  state = core.makeState(0.8);
+  check(state.valid, "header progression confirms recovery");
+  check(core.diagnostics().health ==
+            go2_vins_bridge::HealthState::RecoveryConfirmed,
+        "health recovery confirmation state");
+}
+
+void testHealthLowFeaturesAndSlowDrift() {
+  {
+    go2_vins_bridge::BridgeConfig config = makeConfig();
+    config.recovery_confirm_s = 0.4;
+    go2_vins_bridge::BridgeCore core(config);
+    core.onVinsSample(makeSample(1.0, 0.0, 0.0, 0.0, 0.0), 0.0);
+    go2_nav::VinsReason reason = go2_nav::VinsReason::NoVins;
+    check(core.setOrigin(0.0, &reason), "feature test origin");
+    core.onFeatureCount(23, 1.0, 0.0);
+    auto state = core.makeState(0.0);
+    check(!state.valid && state.reason == go2_nav::VinsReason::Jump,
+          "low feature count invalidates VINS state");
+    reason = go2_nav::VinsReason::Ok;
+    check(!core.setOrigin(0.0, &reason) && reason == go2_nav::VinsReason::Jump,
+          "low feature count cannot establish a new origin");
+    for (int i = 1; i <= 6; ++i) {
+      const double t = 0.1 * i;
+      core.onFeatureCount(45, 1.0 + t, t);
+      core.onVinsSample(makeSample(1.0 + t, t, 0.0, 0.0, 0.0), t);
+    }
+    state = core.makeState(0.6);
+    check(state.valid && core.diagnostics().health ==
+                             go2_vins_bridge::HealthState::RecoveryConfirmed,
+          "feature recovery confirms without requiring old task resume");
+  }
+  {
+    go2_vins_bridge::BridgeConfig config = makeConfig();
+    go2_vins_bridge::BridgeCore core(config);
+    core.onVinsSample(makeSample(1.0, 0.0, 0.0, 0.0, 0.0), 0.0);
+    go2_nav::VinsReason reason = go2_nav::VinsReason::NoVins;
+    check(core.setOrigin(0.0, &reason), "feature header stall origin");
+    core.onFeatureCount(45, 5.0, 0.0);
+    for (int i = 1; i <= 6; ++i) {
+      const double t = 0.1 * i;
+      core.onFeatureCount(45, 5.0, t);  // receive time advances, source does not
+      core.onVinsSample(makeSample(1.0 + t, t, 0.0, 0.0, 0.0), t);
+    }
+    const auto state = core.makeState(0.6);
+    check(!state.valid && state.reason == go2_nav::VinsReason::Jump,
+          "fresh feature callbacks with stalled source header are rejected");
+  }
+  {
+    go2_vins_bridge::BridgeConfig config = makeConfig();
+    config.slow_drift_window_s = 1.0;
+    config.slow_drift_error_m = 0.15;
+    config.jump_position_m = 0.25;
+    go2_vins_bridge::BridgeCore core(config);
+    core.onVinsSample(makeSample(1.0, 0.0, 0.0, 0.0, 0.0), 0.0);
+    go2_nav::VinsReason reason = go2_nav::VinsReason::NoVins;
+    check(core.setOrigin(0.0, &reason), "slow drift test origin");
+    for (int i = 1; i <= 10; ++i) {
+      const double t = 0.1 * i;
+      core.onVinsSample(makeSample(1.0 + t, t, 0.02 * i, 0.0, 0.0), t);
+    }
+    auto state = core.makeState(1.0);
+    check(!state.valid && core.diagnostics().health ==
+                              go2_vins_bridge::HealthState::Failed,
+          "slow pose drift without matching twist invalidates state");
+    for (int i = 11; i <= 22; ++i) {
+      const double t = 0.1 * i;
+      core.onVinsSample(makeSample(1.0 + t, t, 0.20, 0.0, 0.0), t);
+    }
+    state = core.makeState(2.2);
+    check(state.valid && core.diagnostics().health ==
+                             go2_vins_bridge::HealthState::RecoveryConfirmed,
+          "slow drift recovery requires a clean confirmation window");
+  }
 }
 
 void testCoreNonFinite() {
@@ -327,6 +436,8 @@ int main() {
   testCoreNoNav();
   testCoreOriginAndState();
   testCoreStaleJumpReset();
+  testHealthHeaderStallAndRecovery();
+  testHealthLowFeaturesAndSlowDrift();
   testCoreNonFinite();
   testUdpLoopback();
 

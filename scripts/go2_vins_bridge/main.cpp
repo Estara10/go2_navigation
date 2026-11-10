@@ -8,6 +8,7 @@
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -234,6 +235,17 @@ int main(int argc, char** argv) {
 
   auto odom_subscription = node->create_subscription<nav_msgs::msg::Odometry>(
       vins_topic, rclcpp::SensorDataQoS(), odom_callback);
+  [[maybe_unused]] auto feature_subscription =
+      node->create_subscription<sensor_msgs::msg::PointCloud>(
+          "/feature_tracker/feature", rclcpp::SensorDataQoS(),
+          [&](const sensor_msgs::msg::PointCloud::SharedPtr message) {
+            const double receive_stamp_s = monotonicNow();
+            const double header_stamp_s =
+                static_cast<double>(message->header.stamp.sec) +
+                static_cast<double>(message->header.stamp.nanosec) * 1e-9;
+            core.onFeatureCount(static_cast<int>(message->points.size()),
+                                header_stamp_s, receive_stamp_s);
+          });
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr imu_subscription;
   if (!imu_topic.empty() && imu_topic != vins_topic) {
     imu_subscription = node->create_subscription<nav_msgs::msg::Odometry>(
@@ -287,10 +299,12 @@ int main(int argc, char** argv) {
         const go2_vins_bridge::Diagnostics diagnostics = core.diagnostics();
         RCLCPP_INFO_THROTTLE(
             node->get_logger(), *node->get_clock(), 1000,
-            "nav=%d valid=%d reason=%s header=%.6f receive=%.6f "
-            "measured=%d",
+            "nav=%d valid=%d reason=%s health=%s features=%d "
+            "header=%.6f receive=%.6f measured=%d",
             diagnostics.has_nav ? 1 : 0, state.valid ? 1 : 0,
             go2_nav::vinsReasonName(state.reason),
+            go2_vins_bridge::healthStateName(diagnostics.health),
+            diagnostics.feature_count,
             diagnostics.header_stamp_s, diagnostics.receive_stamp_s,
             bridge_config.extrinsic.measured ? 1 : 0);
       });

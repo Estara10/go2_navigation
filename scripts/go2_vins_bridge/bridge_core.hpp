@@ -17,7 +17,23 @@ struct BridgeConfig {
   double jump_position_m = 0.25;
   double jump_yaw_rad = 30.0 * go2_nav::kPi / 180.0;
   double future_skew_s = 0.05;
+  double header_stall_s = 0.25;
+  double feature_timeout_s = 0.5;
+  int minimum_feature_count = 30;
+  double recovery_confirm_s = 1.0;
+  double slow_drift_window_s = 3.0;
+  double slow_drift_error_m = 0.25;
 };
+
+enum class HealthState {
+  Uninitialized,
+  Healthy,
+  Failed,
+  Recovering,
+  RecoveryConfirmed,
+};
+
+const char* healthStateName(HealthState state);
 
 struct VinsSample {
   double header_stamp_s = 0.0;   // VINS/ROS header time (may be Orin clock)
@@ -31,6 +47,8 @@ struct Diagnostics {
   double header_stamp_s = 0.0;
   double receive_stamp_s = 0.0;
   go2_nav::VinsReason reason = go2_nav::VinsReason::NoVins;
+  HealthState health = HealthState::Uninitialized;
+  int feature_count = -1;
 };
 
 class BridgeCore {
@@ -39,6 +57,9 @@ class BridgeCore {
 
   // Called from the ROS odometry callback. now_s is PC CLOCK_MONOTONIC.
   void onVinsSample(const VinsSample& sample, double now_s);
+  // Optional feature tracker side channel. Internal to the bridge; it does
+  // not alter BodyState or the frozen UDP wire format.
+  void onFeatureCount(int count, double header_stamp_s, double receive_stamp_s);
 
   // Establishes the nav frame from the latest valid VINS base pose.
   // Returns false and a reason on failure; the caller must not start motion.
@@ -57,6 +78,7 @@ class BridgeCore {
   bool has_sample_ = false;
   VinsSample latest_;
   double last_header_stamp_s_ = 0.0;
+  double last_header_progress_receive_s_ = 0.0;
   bool header_reset_ = false;
   bool nav_established_ = false;
   bool have_state_ = false;
@@ -64,6 +86,15 @@ class BridgeCore {
   std::optional<go2_nav::BodyStateEstimator> estimator_;
   go2_nav::BodyState last_state_;
   go2_nav::VinsReason reason_ = go2_nav::VinsReason::NoVins;
+  HealthState health_ = HealthState::Uninitialized;
+  double recovery_start_s_ = 0.0;
+  bool have_feature_sample_ = false;
+  int feature_count_ = -1;
+  double feature_header_stamp_s_ = 0.0;
+  double last_feature_progress_receive_s_ = 0.0;
+  double drift_window_start_s_ = 0.0;
+  go2_nav::Vec2 drift_residual_m_{};
+  bool have_drift_window_ = false;
   uint64_t seq_ = 0;
 };
 

@@ -70,6 +70,38 @@ struct StateSnapshot {
   double yaw_rad = 0.0;
 };
 
+enum class MotionConsistencyFault {
+  None,
+  VinsDisplacementExceedsCommandBound,
+  VinsNativeSpeedDivergence,
+};
+
+// Offline-calibrated conservative monitor. Command distance is the integral
+// of the previously issued translation speed. The 1.15 factor catches the
+// reproduced R6 ratio (2.956/2.49 ~= 1.19) while allowing modest tracking and
+// timestamp error; it is a provisional fault threshold, not a safety rating.
+class MotionConsistencyMonitor {
+ public:
+  void reset(double now_s, const std::array<double, 2>& vins_position);
+  MotionConsistencyFault observe(double now_s,
+                                 const std::array<double, 2>& vins_position,
+                                 double previous_command_speed_mps,
+                                 double native_speed_mps,
+                                 double vins_speed_mps);
+
+  double command_distance_m() const { return command_distance_m_; }
+  double vins_distance_m() const { return vins_distance_m_; }
+
+ private:
+  bool initialized_ = false;
+  double last_time_s_ = 0.0;
+  std::array<double, 2> last_position_{};
+  double command_distance_m_ = 0.0;
+  double vins_distance_m_ = 0.0;
+  double divergence_start_s_ = 0.0;
+  bool divergence_active_ = false;
+};
+
 enum class CommandType {
   Invalid,
   Help,
