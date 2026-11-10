@@ -1243,6 +1243,15 @@ int runInteractiveSession(const Config& config, Backend& backend,
     }
 
     if (task.type == TaskType::None) {
+      // In vins mode, drain the bridge STATE socket even while idle. The
+      // bridge streams STATE at 20 Hz; without an idle drain the kernel
+      // receive buffer fills with stale packets and the first command after
+      // a pause reads an old packet and reports STALE. snapshot() is
+      // non-blocking: drain() returns on EAGAIN and keeps the latest STATE.
+      if (config.control_source == ControlSource::Vins &&
+          vins_client != nullptr) {
+        vins_client->snapshot();
+      }
       runtime.sleep_s(kCommandPollPeriodS);
       continue;
     }

@@ -302,6 +302,7 @@ class FakeVinsClient final : public g::VinsClient {
   explicit FakeVinsClient(FakeClock& clock) : clock_(clock) {}
 
   go2_nav::VinsWireState snapshot() override {
+    ++snapshot_calls;
     if (auto_stamp && state.received) {
       state.stamp_s = clock_.now;
     }
@@ -357,6 +358,7 @@ class FakeVinsClient final : public g::VinsClient {
   std::string origin_error = "NO_VINS";
   int origin_requests = 0;
   int ping_requests = 0;
+  int snapshot_calls = 0;
 };
 
 class ScriptedCommands {
@@ -1104,6 +1106,26 @@ void testVinsControlSource() {
             << " vins_control_source\n";
 }
 
+void testVinsIdleDrain() {
+  const int before = failures;
+  Case test_case;
+  prepare(test_case);
+  test_case.config.control_source = g::ControlSource::Vins;
+  test_case.script.add(0.0, "origin");
+  test_case.script.add(0.6, "quit");
+  run(test_case);
+  // While idle (no task, no command) the session must keep draining the VINS
+  // STATE socket. The bridge streams STATE at 20 Hz; without an idle drain the
+  // kernel receive buffer fills with stale packets and the first command after
+  // a pause reads an old packet and reports STALE. origin handling alone calls
+  // snapshot() once; idle drain (0.05 s poll period over ~0.6 s) must add many
+  // more, proving the socket stays drained.
+  check(test_case.vins_client.snapshot_calls >= 8,
+        "vins idle drain keeps snapshotting");
+  check(test_case.backend.move_calls == 0, "vins idle drain no Move");
+  std::cout << (failures == before ? "PASS" : "FAIL") << " vins_idle_drain\n";
+}
+
 void testYawWrap() {
   const int before = failures;
   Case test_case;
@@ -1455,6 +1477,7 @@ int main() {
   testPlanAndGotoNavigation();
   testPlanTimeoutAndStateStale();
   testVinsControlSource();
+  testVinsIdleDrain();
   testYawWrap();
   testArrivalStops();
   testTimeoutStops();
