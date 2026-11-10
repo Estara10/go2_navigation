@@ -114,9 +114,9 @@ pgrep -af '[r]os2 topic hz'
 
 相机与三路接收确认后，按[VINS构建恢复与IMU告警审阅](../../docs/history/20261108_VINS_BUILD_AND_IMU_REVIEW.md)执行：
 
-- 电脑先按 best_effort 记录 `/camera/camera/imu`、`/vins/odometry`、`/vins/imu_propagate`，QoS 文件为[`field_record_qos_best_effort.yaml`](field_record_qos_best_effort.yaml)；
+- 电脑先按 best_effort 记录 `/camera/camera/imu`、`/odometry`、`/imu_propagate`，QoS 文件为[`field_record_qos_best_effort.yaml`](field_record_qos_best_effort.yaml)；
 - 再启动独立构建的 `"$VINS_INSTALL_PREFIX/lib/vins/vins_node"`，配置 `"$PROJECT_ROOT/scripts/go2_vins/config/d435i_480x270/realsense_stereo_imu.yaml"`，设置 `VINS_IMAGE_QOS=best_effort`、`VINS_SYNC_DIAGNOSTICS=1`；
-- 先在机器人静止时观察 `SYNC_DIAG`、特征数、`Initialization finish!` 和 `/vins/odometry`/`/vins/imu_propagate`；未初始化则停止，不自行移动机器人；
+- 先在机器人静止时观察 `SYNC_DIAG`、特征数、`Initialization finish!` 和 `/odometry`/`/imu_propagate`；未初始化则停止，不自行移动机器人；
 - 停止顺序为 VINS → 记录器 → 相机；检查退出码和两端残留进程；全程不发送机器人运动、停止、恢复或模式切换指令。
 
 时间对齐、QoS 核对、完成/停止条件见上述记录。

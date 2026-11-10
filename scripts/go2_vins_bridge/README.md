@@ -60,7 +60,7 @@ cmake --build build/go2_vins_bridge_core --parallel 2
 source /opt/ros/humble/setup.bash
 ./build/go2_vins_bridge/go2_vins_bridge \
   --config scripts/go2_nav_plan/config/d435i_provisional.conf \
-  --vins-topic /vins/odometry \
+  --vins-topic /odometry \
   --control-port 46001 --state-port 46002
 ```
 
@@ -146,5 +146,5 @@ STATE <seq> <stamp> <x> <y> <z> <yaw> <vx> <vy> <wz> <valid> <reason> <measured>
 - 未在本任务运行桥接节点或 VINS；未接实时相机/机器人。
 - 未验证 VINS header 与 PC 时间的现场偏差、实时 UDP 丢包和 stop 延迟。
 - 临时外参、`base_link` 物理原点、D435i/VINS 精度和 5 cm 均未验收。
-- `--imu-topic` 可选；若同时订阅 `/vins/odometry` 和 `/vins/imu_propagate`，当前实现是“最新样本覆盖”，不是融合。默认不订阅 propagate。
+- `--imu-topic` 可选；若同时订阅 `/odometry` 和 `/imu_propagate`，当前实现是“最新样本覆盖”，不是融合。默认不订阅 propagate。
 - 节点使用 `SensorDataQoS`（best-effort 订阅），可兼容 reliable/best-effort 发布端；若收不到数据，先用 `ros2 topic info -v` 核对实际 QoS 和话题名。

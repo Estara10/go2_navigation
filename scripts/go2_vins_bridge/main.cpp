@@ -31,7 +31,7 @@ void printUsage(const char* program) {
       << "用法: " << program
       << " --config <extrinsic.conf> [--control-port 46001]"
          " [--state-port 46002]\n"
-      << "       [--vins-topic /vins/odometry] [--imu-topic <topic>]"
+      << "       [--vins-topic /odometry] [--imu-topic <topic>]"
          " [--vins-timeout-s 0.5]\n"
       << "       [--jump-position-m 0.25] [--jump-yaw-deg 30]"
          " [--rate-hz 20]\n"
@@ -100,7 +100,7 @@ go2_nav::CameraState cameraFromOdometry(
 
 int main(int argc, char** argv) {
   std::string config_path;
-  std::string vins_topic = "/vins/odometry";
+  std::string vins_topic = "/odometry";
   std::string imu_topic;
   uint16_t control_port = 46001;
   uint16_t state_port = 46002;

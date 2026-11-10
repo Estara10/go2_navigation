@@ -50,20 +50,20 @@ cmake --build build/go2_nav_plan --parallel 2
 
 ## 从现场 bag 提取 VINS CSV
 
-现场用 `ros2 bag record` 记录 `/vins/odometry`，建议同时记录 `/vins/imu_propagate` 和 `/camera/camera/imu`。回来后：
+现场用 `ros2 bag record` 记录 `/odometry`，建议同时记录 `/imu_propagate` 和 `/camera/camera/imu`。回来后：
 
 ```bash
 source /opt/ros/humble/setup.bash
 /usr/bin/python3 scripts/go2_nav_plan/tools/extract_vins_bag.py \
   --bag /path/to/bag_dir \
-  --topic /vins/odometry \
+  --topic /odometry \
   --out /tmp/odometry.csv
 ```
 
 - 必须用 `/usr/bin/python3`；Anaconda 的 Python 3.13 加载不了 Humble 的 `rclpy` 扩展。
 - 脚本只读 SQLite，不创建 ROS 节点，不初始化 DDS。
 - 已在历史 bag 上验证：1341 行，输出与原审阅 CSV 逐字节一致。
-- `/vins/imu_propagate` 也可以用 `--topic` 提取，但控制先用优化后的 `/vins/odometry`。
+- `/imu_propagate` 也可以用 `--topic` 提取，但控制先用优化后的 `/odometry`。
 
 CSV 列约定：
 

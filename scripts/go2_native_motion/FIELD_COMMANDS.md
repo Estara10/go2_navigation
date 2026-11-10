@@ -32,14 +32,14 @@ export ROS_DOMAIN_ID=...                      # 相机/VINS 使用的独立 ROS 
 
 启动顺序：
 
-1. 按 `scripts/go2_vins/` 起 VINS，确认 `/vins/odometry` 有数据；这不在本工具内。
+1. 按 `scripts/go2_vins/` 起 VINS，确认 `/odometry` 有数据；这不在本工具内。
 2. 另开终端启动桥接（需要 ROS 2 Humble；不要沿用 Anaconda 的 `LD_LIBRARY_PATH`，先 `conda deactivate` 或使用干净 shell）：
 
 ```bash
 source /opt/ros/humble/setup.bash
 "$PROJECT_ROOT/build/go2_vins_bridge/go2_vins_bridge" \
   --config "$PROJECT_ROOT/scripts/go2_nav_plan/config/d435i_provisional.conf" \
-  --vins-topic /vins/odometry \
+  --vins-topic /odometry \
   --control-port 46001 --state-port 46002
 ```
 

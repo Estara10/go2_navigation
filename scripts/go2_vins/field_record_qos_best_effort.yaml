@@ -7,12 +7,12 @@
   depth: 500
   reliability: best_effort
   durability: volatile
-/vins/odometry:
+/odometry:
   history: keep_last
   depth: 100
   reliability: reliable
   durability: volatile
-/vins/imu_propagate:
+/imu_propagate:
   history: keep_last
   depth: 100
   reliability: reliable

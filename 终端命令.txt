@@ -66,7 +66,7 @@ source /home/lidio/go2_navigation/install/vins/setup.bash
 ros2 run vins vins_node "$RUN/config/realsense_stereo_imu.yaml"
 # config_file 是位置参数（fork 源码 non_ros_args[1]，已核对），不是 -p 参数。
 
-确认日志出现 Initialization finish! 且 /vins/odometry 有输出后，再开桥接。
+确认日志出现 Initialization finish! 且 /odometry 有输出后，再开桥接。
 未初始化时先停，不要移动机器人。
 
 ---
@@ -84,7 +84,7 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>192
 cd /home/lidio/go2_navigation
 ./build/go2_vins_bridge/go2_vins_bridge \
   --config scripts/go2_nav_plan/config/d435i_provisional.conf \
-  --vins-topic /vins/odometry \
+  --vins-topic /odometry \
   --control-port 46001 --state-port 46002
 # 启动前确认二进制是最近一次构建的（build/go2_vins_bridge/ 与 build/final_bridge/ 都有同名文件）。
 

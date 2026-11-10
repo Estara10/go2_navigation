@@ -180,7 +180,7 @@
 
 默认 `--control-source native`，行为与之前相同。`vins` 模式用于 A1 的 VINS 闭环机制验证：
 
-- 需要另行构建并启动 `scripts/go2_vins_bridge/`；它订阅 `/vins/odometry`，用 `T_base_cam` 转成 `base_link`，通过 UDP 发给本工具。原生工具**不链接 ROS/rclcpp**，也不初始化额外的 ROS 节点。
+- 需要另行构建并启动 `scripts/go2_vins_bridge/`；它订阅 `/odometry`，用 `T_base_cam` 转成 `base_link`，通过 UDP 发给本工具。原生工具**不链接 ROS/rclcpp**，也不初始化额外的 ROS 节点。
 - 本工具在 vins 模式下仍初始化 Go2 SDK DDS，因为 `Move/StopMove` 和原生状态订阅仍需要；原生 `SportModeState` 只用于状态显示和停止，不参与控制。
 - `origin` 改为向桥接发送 `SET_ORIGIN` 并等待 `ORIGIN_OK <measured>`；`ORIGIN_FAIL <reason>` 时不记录起点、不进入运动。
 - `measured` 是机器可读字段：`ORIGIN_OK` 和每条 `STATE` 都携带。`measured=0` 默认拒绝 origin/plan/goto，不进入运动；只有显式 `--allow-unmeasured-extrinsic` 才允许，用于离线/机制验证，日志和 CSV 标记覆盖状态，仍不得用于实机控制或 5 cm 验收。
