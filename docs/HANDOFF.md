@@ -22,15 +22,16 @@ D435i/VINS → `base_link` → Pure Pursuit → Go2 这条链首次在实机跑�
 
 ## 已知问题（按优先级）
 
-1. **UDP 旧包缓冲 → 第一次 `plan` 报 STALE**（要修，执行器）。
-   原生工具空闲时没有持续 drain UDP 套接字，下一次 `plan` 读到旧缓冲包（`vins_age > 0.5 s`）被拒。现场处理：每次 `plan` 前先 `status`；第一次 STALE 就再发一次。**根因在 `VinsUdpClient`，要改成持续 drain 或每次命令前先排空。**
+1. ✅ **UDP 旧包缓冲 → 第一次 `plan` 报 STALE**（已修，2026-11-10）。
+   根因是原生工具空闲时没有持续 drain UDP 套接字，下一次 `plan` 读到旧缓冲包。已在 `native_motion_core.cpp` 空闲分支（`task.type == None` 且 `control_source == Vins`）每 0.05 s 调一次 `vins_client->snapshot()`（即非阻塞 `drain()`，只保留最新 STATE），并加自检 `vins_idle_drain`（提交 `70403a1`）。
+   现场二进制 `build/final_sdk/go2_native_motion` 已于 2026-11-10 10:39 重建，离线自检通过。**现场仍按「plan 前先 status、偶发 STALE 就重发一次」作为兜底**，直到实机确认不再出现。
 2. **桥接 STATE 只发/停发语义**（要修，执行器）。确认桥接在没有监听者时是否该停发 STATE，避免停发状态计时器被卡住。
 3. **VINS 停后重锚定约 8.4 cm**。需要下次带 bag 的数据分析，判断是尺度、外参还是停止后的漂移。
 4. **临时外参 `measured=0`**。当前 `t=(0.3475, 0, 0.0525)` m、光学旋转按水平正前方；仰角、相机 IMU 偏移、yaw/pitch/roll 都未实测。
 
 ## 下一步（下次现场前 / 现场时）
 
-1. **执行器先修问题 1、2**（离线，不碰实机）：`VinsUdpClient` 持续 drain + 桥接停发语义。
+1. ~~执行器先修问题 1、2~~：问题 1（持续 drain）已修并重建二进制；问题 2（桥接停发语义）仍待处理。
 2. **补 0.5 m 的横向、朝向**，并重复 0.5 m / 1 m；每次运行带 bag，按 `logs/field_runs/<时间戳>_<命令>/` 归档。
 3. **M1-0 速度标定**：实测 0.20/0.25/0.30 m/s 的最小稳定步长、停车距离、指令延迟。
 4. **外参补到 `measured=1`**：现场测仰角、相机 IMU 偏移、yaw/pitch/roll，确认 `T_base_cam` 后才能谈 5 cm。

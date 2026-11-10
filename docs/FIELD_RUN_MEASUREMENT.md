@@ -40,7 +40,7 @@ env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/home/lidio/Libraries/unitree_sdk2
 
 1. `origin` —— 确认不是 `unmeasured_extrinsic` 拒绝（已加 `--allow-unmeasured-extrinsic`，应通过）。
 2. `status` —— 确认 `valid=1 reason=OK`、`vins_age` 小（<0.1 s）。
-3. `plan X Y` —— 若第一次回 `STALE`，先再发一次 `status`，再发 `plan X Y`（已知 UDP 旧包问题，重发即可）。
+3. `plan X Y` —— UDP 旧包 STALE 已修（空闲持续 drain，`70403a1`，二进制已重建）；若仍偶发 `STALE`，再发一次 `status` 后重发 `plan X Y` 即可。
 4. 等它报 `ARRIVED` 并停稳后，再输入 `stop`，然后 `quit`。
 5. 人工确认机器人确实停稳（`StopMove` 返回 0 不代表真停）。
 
@@ -81,5 +81,5 @@ env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/home/lidio/Libraries/unitree_sdk2
 - **原点标定做一次就够**，但要认真做；标定错了后面所有数都偏。
 - **参考线要直、要长**：短或弯的参考线会让横向读数漂。
 - **每轮重新放回 A、重新对齐**：`plan` 的目标是相对下令时机头的，连续 `plan` 会累积；要独立重复测试就每轮回到 A。
-- **`status` 先于 `plan`**：避免第一次 `plan` 被 `STALE` 拦。
+- **`status` 先于 `plan`**：好习惯，也能顺带确认 `valid=1`、`vins_age` 小；旧包 STALE 已修。
 - **量完再 `quit`**：先停稳、量完、填完记录卡，再结束进程，避免 CSV 没刷完。
